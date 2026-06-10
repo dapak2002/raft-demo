@@ -37,34 +37,37 @@ def _windows(text: str) -> list[str]:
     return [text[i : i + PARSE_MAX_CHARS] for i in range(0, len(text), step)]
 
 
+def _parse_text(text: str) -> Order | None:
+    chain = PARSE_PROMPT | get_llm().with_structured_output(PartialOrder)
+    fields: dict[str, str | float] = {}
+
+    for window in _windows(text):
+        try:
+            partial = chain.invoke({"text": window})
+            fields.update(partial.model_dump(exclude_none=True))
+        except Exception as exc:
+            logger.warning("Parse window failed: %s", exc)
+
+    if all(key in fields for key in ("orderID", "buyer", "state", "total")):
+        return Order(**fields)
+
+    logger.warning("Incomplete order: %s", fields)
+    return None
+
+
 def parse_node(state: AgentState) -> AgentState:
     raw_orders = state.get("raw_orders") or []
-    logger.info("Parsing %d raw orders", len(raw_orders))
-
-    if not raw_orders:
-        return {"orders": []}
-
-    chain = PARSE_PROMPT | get_llm().with_structured_output(PartialOrder)
-    orders: list[Order] = []
+    parsed_orders: list[Order] = []
 
     for text in raw_orders:
         text = text.strip()
         if not text:
             continue
 
-        fields: dict[str, str | float] = {}
-        for window in _windows(text):
-            try:
-                partial = chain.invoke({"text": window})
-                fields.update(partial.model_dump(exclude_none=True))
-            except Exception as exc:
-                logger.warning("Parse window failed: %s", exc)
+        order = _parse_text(text)
+        if order is not None:
+            logger.info("Parsed order %s", order.orderID)
+            parsed_orders.append(order)
 
-        if all(k in fields for k in ("orderID", "buyer", "state", "total")):
-            orders.append(Order(**fields))
-            logger.info("Parsed order %s", fields["orderID"])
-        else:
-            logger.warning("Incomplete order: %s", fields)
-
-    logger.info("Parsed %d/%d orders", len(orders), len(raw_orders))
-    return {"orders": orders}
+    logger.info("Parsed %d/%d orders", len(parsed_orders), len(raw_orders))
+    return {"parsed_orders": parsed_orders}

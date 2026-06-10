@@ -5,7 +5,6 @@ import logging
 import sys
 
 from agent.graph import run
-from agent.tools.fetch_orders import FetchError
 
 logging.basicConfig(
     level=logging.INFO,
@@ -24,10 +23,10 @@ def main() -> None:
         sys.exit(1)
 
     try:
-        print(json.dumps(run(query), indent=2))
-    except FetchError as exc:
-        print(str(exc), file=sys.stderr)
-        sys.exit(1)
+        result = run(query)
+        print(json.dumps(result, indent=2))
+        if result.get("status") == "error":
+            sys.exit(1)
     except RuntimeError as exc:
         print(str(exc), file=sys.stderr)
         sys.exit(1)
