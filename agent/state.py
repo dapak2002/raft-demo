@@ -1,9 +1,14 @@
 from typing import Literal, NotRequired, TypedDict
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
+
+from agent.operators import Operator
 
 OrderField = Literal["orderID", "buyer", "state", "total"]
-Operator = Literal["equals", "contains", "over", "under", "at_least", "at_most", "not"]
+
+
+def normalize_buyer(name: str) -> str:
+    return " ".join(part.capitalize() for part in name.strip().split())
 
 
 class Order(BaseModel):
@@ -12,10 +17,15 @@ class Order(BaseModel):
     state: str
     total: float
 
+    @field_validator("buyer")
+    @classmethod
+    def normalize_buyer_field(cls, value: str) -> str:
+        return normalize_buyer(value)
+
 
 class Filter(BaseModel):
     field: OrderField = Field(description="The order field to filter on")
-    operator: Operator = Field(description="How to compare the field to the value")
+    operator: Operator = Field(description="The comparison operator")
     value: str | float | int | bool = Field(description="The value to compare against")
 
 

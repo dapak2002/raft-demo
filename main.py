@@ -5,7 +5,7 @@ import logging
 import sys
 
 from agent.graph import run
-from agent.nodes.fetch import FetchError
+from agent.tools.fetch_orders import FetchError
 
 logging.basicConfig(
     level=logging.INFO,

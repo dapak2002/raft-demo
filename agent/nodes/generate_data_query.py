@@ -1,43 +1,61 @@
 import logging
 
-from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
 
 from agent.llm import get_llm
-from agent.state import AgentState, QueryPlan
+from agent.state import AgentState, Filter, QueryPlan
+from agent.tools.create_filter import build_create_filter_tool
 
 logger = logging.getLogger(__name__)
 
-QUERY_PROMPT = ChatPromptTemplate.from_messages(
-    [
-        (
-            "system",
-            "Convert the user's request into filters over order data.\n\n"
-            "For each condition in the request, choose:\n"
-            "- field: one of orderID, buyer, state, total\n"
-            "- operator: one of equals, contains, over, under, at_least, at_most, not\n"
-            "- value: the concrete value to compare against\n\n"
-            "Field guide:\n"
-            "- orderID: order identifier\n"
-            "- buyer: buyer name (use contains for partial names)\n"
-            "- state: 2-letter US state code\n"
-            "- total: numeric order total\n\n"
-            "Operator guide:\n"
-            "- equals / not: exact match\n"
-            "- contains: substring match\n"
-            "- over / under / at_least / at_most: numeric comparisons on total\n\n"
-            "Expand conceptual terms (e.g. 'midwest' → OH, 'more than 500' → over 500).\n"
-            "Return an empty filter list if no filters apply.",
-        ),
-        ("human", "{user_query}"),
-    ]
-)
+SYSTEM = """\
+Convert the user's request into order data filters using the create_filter tool.
+
+Call create_filter once for each condition in the request.
+Do not respond with filters in plain text — use the tool only.
+
+Fields: orderID, buyer, state, total
+
+Allowed operators by field:
+- orderID: equals, not_equals, contains
+- buyer: equals, not_equals, contains
+- state: equals, not_equals
+- total: equals, not_equals, gt, gte, lt, lte
+
+Guidance:
+- Map 'more than' → gt, 'at least' → gte, 'less than' → lt, 'at most' → lte
+- Use contains for partial buyer or orderID matches
+- Map state names to 2-letter codes (Ohio → OH)
+- If no filters apply, do not call the tool"""
 
 
 def generate_data_query_node(state: AgentState) -> AgentState:
-    logger.info("Generating data query for: %s", state["user_query"])
+    user_query = state["user_query"]
+    logger.info("Generating data query for: %s", user_query)
 
-    chain = QUERY_PROMPT | get_llm().with_structured_output(QueryPlan)
-    data_query = chain.invoke({"user_query": state["user_query"]})
+    filters: list[Filter] = []
+    create_filter = build_create_filter_tool(filters)
+    llm = get_llm().bind_tools([create_filter])
+
+    messages = [
+        SystemMessage(content=SYSTEM),
+        HumanMessage(content=user_query),
+    ]
+
+    for _ in range(10):
+        response = llm.invoke(messages)
+        if not response.tool_calls:
+            break
+
+        messages.append(response)
+        for call in response.tool_calls:
+            if call["name"] != "create_filter":
+                continue
+            result = create_filter.invoke(call["args"])
+            logger.info("Tool call: %s -> %s", call["args"], result)
+            messages.append(ToolMessage(content=str(result), tool_call_id=call["id"]))
+
+    data_query = QueryPlan(filters=filters)
     logger.info("Data query: %s", [f.model_dump() for f in data_query.filters])
 
     return {"data_query": data_query}
