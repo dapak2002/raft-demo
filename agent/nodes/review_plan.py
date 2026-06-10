@@ -1,9 +1,9 @@
 import logging
 
-from langchain_core.messages import HumanMessage
 from pydantic import BaseModel, Field
 
 from agent.llm import get_llm
+from agent.schema import filter_field_catalog
 from agent.services.filter_engine import plan_has_filters
 from agent.state import AgentState, QueryPlan
 
@@ -14,15 +14,23 @@ Decide if the filter plan satisfies the user's request.
 
 User request: {user_query}
 
+Allowed fields:
+{fields}
+
 Current plan (groups of filters only):
 {plan_json}
 
 Rules:
-- Available fields: orderID, buyer, state, total
 - "show all orders" / "list all" / no criteria → empty plan is correct; set match_all=true, complete=true
-- Filtered requests → plan must include every condition; set match_all=false
+- Filtered requests → first list every condition in the request (states, buyers,
+  ids, amount limits like "over $500"), then check each one has a matching filter
+  in the plan. If ANY condition is missing, set complete=false and name it in
+  'missing'; set match_all=false
+- Use only the allowed fields listed above
+- state filters should use two-letter codes (Texas → TX)
 - complete=true means the plan is ready to execute
-- match_all is YOUR output flag, not a field in the plan JSON"""
+- match_all is YOUR output flag, not a field in the plan JSON
+- match_all must be false whenever the plan contains any filters"""
 
 
 class PlanReview(BaseModel):
@@ -38,10 +46,10 @@ class PlanReview(BaseModel):
 
 
 def _infer_match_all(review: PlanReview, empty_plan: bool) -> bool:
-    if review.match_all:
-        return True
     if not empty_plan:
         return False
+    if review.match_all:
+        return True
 
     missing = (review.missing or "").lower()
     if any(
@@ -54,14 +62,16 @@ def _infer_match_all(review: PlanReview, empty_plan: bool) -> bool:
 
 def review_plan_node(state: AgentState) -> AgentState:
     user_query = state["user_query"]
-    data_query = state.get("data_query") or QueryPlan()
+    data_query = state.get("plan") or QueryPlan()
     attempts = state.get("plan_attempts", 0)
     empty_plan = not plan_has_filters(data_query)
+    field_catalog = filter_field_catalog()
 
     chain = get_llm().with_structured_output(PlanReview)
     review = chain.invoke(
         REVIEW_PROMPT.format(
             user_query=user_query,
+            fields=field_catalog,
             plan_json=data_query.model_dump_json(indent=2),
         )
     )
@@ -71,36 +81,17 @@ def review_plan_node(state: AgentState) -> AgentState:
 
     if accepted:
         logger.info("Plan review passed (match_all=%s)", match_all)
-        updates: AgentState = {
-            "plan_reviewed": True,
+        return {
+            "plan_complete": True,
             "match_all": match_all,
         }
-        if match_all:
-            updates["data_query"] = QueryPlan()
-        return updates
 
-    logger.warning("Plan review incomplete: %s", review.missing)
+    feedback = review.missing or "Plan is incomplete."
+    logger.warning("Plan review incomplete: %s", feedback)
 
-    updates = {
-        "plan_reviewed": False,
+    return {
+        "plan_complete": False,
         "plan_attempts": attempts + 1,
         "match_all": match_all,
-        "plan_feedback": review.missing,
+        "plan_feedback": feedback,
     }
-
-    if match_all:
-        updates["data_query"] = QueryPlan()
-        updates["messages"] = [
-            HumanMessage(content="User wants all orders. Do not call any tools.")
-        ]
-    else:
-        updates["messages"] = [
-            HumanMessage(
-                content=(
-                    f"The plan is incomplete: {review.missing}. "
-                    "Call the required filter tools in one turn."
-                )
-            )
-        ]
-
-    return updates

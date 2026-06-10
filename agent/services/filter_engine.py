@@ -1,29 +1,19 @@
-from agent.operators import FIELD_OPERATORS, Operator
-from agent.state import Filter, FilterGroup, Order, QueryPlan, normalize_buyer
+from typing import Any
 
-_STATE_ALIASES = {
-    "texas": "TX",
-    "ohio": "OH",
-    "washington": "WA",
-}
-
-
-def _normalize_state(value: str) -> str:
-    key = value.strip().lower()
-    if key in _STATE_ALIASES:
-        return _STATE_ALIASES[key]
-    if len(value.strip()) == 2:
-        return value.strip().upper()
-    return value.strip()
+from agent.schema import Operator, Order, operators_for
+from agent.state import Filter, FilterGroup, QueryPlan
 
 
 def _apply_string(actual: str, expected: str, operator: Operator) -> bool:
+    actual_lower = actual.lower()
+    expected_lower = expected.lower()
+
     if operator == Operator.EQUALS:
-        return actual == expected
+        return actual_lower == expected_lower
     if operator == Operator.NOT_EQUALS:
-        return actual != expected
+        return actual_lower != expected_lower
     if operator == Operator.CONTAINS:
-        return expected in actual
+        return expected_lower in actual_lower
     return False
 
 
@@ -43,26 +33,37 @@ def _apply_numeric(actual: float, expected: float, operator: Operator) -> bool:
     return False
 
 
+def _apply_list(actual: list[Any], expected: str, operator: Operator) -> bool:
+    items = [str(item).lower() for item in actual]
+    needle = expected.lower()
+
+    if operator == Operator.CONTAINS:
+        return any(needle in item for item in items)
+    if operator == Operator.EQUALS:
+        return needle in items
+    if operator == Operator.NOT_EQUALS:
+        return needle not in items
+    return False
+
+
 def apply_filter(order: Order, filt: Filter) -> bool:
-    allowed = FIELD_OPERATORS.get(filt.field, frozenset())
-    if filt.operator not in allowed:
+    actual = getattr(order, filt.field, None)
+    if actual is None:
         return False
 
-    if filt.field == "total":
-        return _apply_numeric(order.total, float(filt.value), filt.operator)
+    if filt.operator not in operators_for(filt.field):
+        return False
 
-    if filt.field == "buyer":
-        actual = normalize_buyer(order.buyer)
-        expected = normalize_buyer(str(filt.value))
-        return _apply_string(actual, expected, filt.operator)
+    if isinstance(actual, list):
+        return _apply_list(actual, str(filt.value), filt.operator)
 
-    if filt.field == "state":
-        actual = _normalize_state(str(getattr(order, filt.field)))
-        expected = _normalize_state(str(filt.value))
-        return _apply_string(actual, expected, filt.operator)
+    if isinstance(actual, bool):
+        return _apply_string(str(actual), str(filt.value), filt.operator)
 
-    actual = str(getattr(order, filt.field))
-    return _apply_string(actual, str(filt.value), filt.operator)
+    if isinstance(actual, (int, float)):
+        return _apply_numeric(float(actual), float(filt.value), filt.operator)
+
+    return _apply_string(str(actual), str(filt.value), filt.operator)
 
 
 def group_matches(order: Order, group: FilterGroup) -> bool:
@@ -88,8 +89,23 @@ def plan_matches(order: Order, plan: QueryPlan) -> bool:
 
 def execute_plan(orders: list[Order], plan: QueryPlan) -> list[Order]:
     matched = [order for order in orders if plan_matches(order, plan)]
-    return sorted(matched, key=lambda order: order.orderID)
+    return sorted(matched, key=Order.sort_key)
 
 
 def plan_has_filters(plan: QueryPlan) -> bool:
     return bool(active_groups(plan))
+
+
+def plan_from_groups(groups: list[FilterGroup]) -> QueryPlan:
+    """Build a plan from accumulated tool-call groups, deduplicating repeats."""
+    seen: set[str] = set()
+    unique: list[FilterGroup] = []
+    for group in groups:
+        if not group.filters:
+            continue
+        key = group.model_dump_json()
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(group)
+    return QueryPlan(groups=unique)

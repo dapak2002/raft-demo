@@ -1,7 +1,6 @@
 import logging
 
 import requests
-from langchain_core.tools import tool
 
 from config import CUSTOMER_API_URL, FETCH_TIMEOUT_SECONDS
 
@@ -12,7 +11,6 @@ class FetchError(Exception):
     pass
 
 
-@tool
 def fetch_orders(limit: int | None = None) -> list[str]:
     """Fetch unstructured order text from the customer orders API."""
     url = f"{CUSTOMER_API_URL.rstrip('/')}/api/orders"
