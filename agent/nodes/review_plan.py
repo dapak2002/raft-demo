@@ -1,7 +1,9 @@
 import logging
 
+from langgraph.runtime import Runtime
 from pydantic import BaseModel, Field
 
+from agent.fault_tolerance import log_node_attempt
 from agent.llm import get_llm
 from agent.schema import filter_field_catalog
 from agent.services.filter_engine import plan_has_filters
@@ -39,14 +41,15 @@ class PlanReview(BaseModel):
     )
 
 
-def review_plan_node(state: AgentState) -> AgentState:
+async def review_plan_node(state: AgentState, runtime: Runtime) -> AgentState:
+    log_node_attempt("review_plan", runtime)
     user_query = state["user_query"]
     data_query = state.get("plan") or QueryPlan()
     attempts = state.get("plan_attempts", 0)
     field_catalog = filter_field_catalog()
 
     chain = get_llm().with_structured_output(PlanReview)
-    review = chain.invoke(
+    review = await chain.ainvoke(
         REVIEW_PROMPT.format(
             user_query=user_query,
             fields=field_catalog,

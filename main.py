@@ -9,6 +9,8 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
 )
+# LangGraph logs retries at INFO with full tracebacks; we log attempts in agent.fault_tolerance.
+logging.getLogger("langgraph.pregel._retry").setLevel(logging.WARNING)
 
 
 def main() -> None:

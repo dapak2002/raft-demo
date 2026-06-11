@@ -4,7 +4,9 @@ import logging
 
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.runnables import Runnable
+from langgraph.runtime import Runtime
 
+from agent.fault_tolerance import log_node_attempt
 from agent.llm import get_llm
 from agent.schema import Order, parse_prompt
 from agent.state import ParseRecordState
@@ -51,12 +53,12 @@ def _merge_partials(partials: list[Order]) -> Order | None:
     return Order.model_validate(merged)
 
 
-def _parse_text(text: str, chain: Runnable) -> Order | None:
+async def _parse_text(text: str, chain: Runnable) -> Order | None:
     partials: list[Order] = []
 
     for window in _windows(text):
         try:
-            partials.append(chain.invoke({"text": window}))
+            partials.append(await chain.ainvoke({"text": window}))
         except Exception as exc:
             logger.warning("Parse window failed: %s", exc)
 
@@ -68,13 +70,17 @@ def _parse_text(text: str, chain: Runnable) -> Order | None:
     return order
 
 
-def parse_record_node(state: ParseRecordState) -> dict[str, list[Order]]:
+async def parse_record_node(
+    state: ParseRecordState,
+    runtime: Runtime,
+) -> dict[str, list[Order]]:
     """Parse a single raw order record (one Send task)."""
+    log_node_attempt("parse_record", runtime)
     text = state["text"].strip()
     if not text:
         return {"parsed_orders": []}
 
-    order = _parse_text(text, _get_chain())
+    order = await _parse_text(text, _get_chain())
     if order is None:
         return {"parsed_orders": []}
 

@@ -1,7 +1,9 @@
 import logging
 
 from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
+from langgraph.runtime import Runtime
 
+from agent.fault_tolerance import log_node_attempt
 from agent.llm import get_llm
 from agent.schema import filter_field_catalog
 from agent.services.filter_engine import build_query_plan
@@ -54,10 +56,17 @@ def _run_plan_tool(name: str, args: dict) -> tuple[FilterNode | None, str]:
     return None, f"Error — {result}"
 
 
-def plan_node(state: AgentState) -> AgentState:
+async def plan_node(state: AgentState, runtime: Runtime) -> AgentState:
     """Run the full tool-calling loop in one node (LLM → tools → LLM until done)."""
+    log_node_attempt("plan", runtime)
     user_query = state["user_query"]
     feedback = state.get("plan_feedback")
+    if feedback:
+        logger.warning(
+            "Re-planning after review feedback (graph attempt %d): %s",
+            state.get("plan_attempts", 0),
+            feedback,
+        )
 
     messages: list = [
         SystemMessage(content=SYSTEM.format(fields=filter_field_catalog())),
@@ -79,7 +88,7 @@ def plan_node(state: AgentState) -> AgentState:
     logger.info("Starting query plan for: %s", user_query)
 
     while True:
-        response = llm.invoke(messages)
+        response = await llm.ainvoke(messages)
         messages.append(response)
 
         tool_calls = getattr(response, "tool_calls", None) or []

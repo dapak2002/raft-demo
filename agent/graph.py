@@ -1,9 +1,15 @@
+import asyncio
 import logging
 from typing import Any
 
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import Send
 
+from agent.fault_tolerance import (
+    build_retry_policy,
+    build_timeout_policy,
+    node_error_handler,
+)
 from agent.nodes.execute import execute_node
 from agent.nodes.fetch import fetch_node
 from agent.nodes.merge_parse import merge_parse_node
@@ -14,9 +20,19 @@ from agent.nodes.review_plan import review_plan_node
 from agent.nodes.validate_plan import validate_plan_node
 from agent.schema import Order
 from agent.state import AgentState, QueryPlan
-from config import MAX_PLAN_ATTEMPTS, PARSE_MAX_WORKERS
+from config import (
+    FETCH_NODE_TIMEOUT_SECONDS,
+    LLM_NODE_TIMEOUT_SECONDS,
+    MAX_PLAN_ATTEMPTS,
+    NODE_MAX_RETRIES,
+    PARSE_MAX_WORKERS,
+)
 
 logger = logging.getLogger(__name__)
+
+_TRANSIENT_RETRY = build_retry_policy(max_attempts=NODE_MAX_RETRIES)
+_FETCH_TIMEOUT = build_timeout_policy(FETCH_NODE_TIMEOUT_SECONDS)
+_LLM_TIMEOUT = build_timeout_policy(LLM_NODE_TIMEOUT_SECONDS)
 
 
 def route_after_fetch(state: AgentState) -> str | list[Send]:
@@ -24,7 +40,11 @@ def route_after_fetch(state: AgentState) -> str | list[Send]:
     if state.get("status") == "error":
         return "respond"
     return [
-        Send("parse_record", {"text": text})
+        Send(
+            "parse_record",
+            {"text": text},
+            timeout=_LLM_TIMEOUT,
+        )
         for text in state.get("raw_orders") or []
     ]
 
@@ -40,9 +60,17 @@ def route_after_review_plan(state: AgentState) -> str:
         return "validate_plan"
 
     if state.get("plan_attempts", 0) >= MAX_PLAN_ATTEMPTS:
-        logger.warning("Plan still incomplete after %d attempts; proceeding", MAX_PLAN_ATTEMPTS)
+        logger.warning(
+            "Plan review loop exhausted after %d attempts; proceeding to validate",
+            MAX_PLAN_ATTEMPTS,
+        )
         return "validate_plan"
 
+    logger.warning(
+        "Plan incomplete (review attempt %d/%d); looping back to plan",
+        state.get("plan_attempts", 0),
+        MAX_PLAN_ATTEMPTS,
+    )
     return "plan"
 
 
@@ -55,14 +83,52 @@ def route_after_validate_plan(state: AgentState) -> str:
 def build_graph():
     graph = StateGraph(AgentState)
 
-    graph.add_node("fetch", fetch_node)
-    graph.add_node("parse_record", parse_record_node)
-    graph.add_node("merge_parse", merge_parse_node)
-    graph.add_node("plan", plan_node)
-    graph.add_node("review_plan", review_plan_node)
-    graph.add_node("validate_plan", validate_plan_node)
-    graph.add_node("execute", execute_node)
-    graph.add_node("respond", respond_node)
+    graph.set_node_defaults(
+        retry_policy=_TRANSIENT_RETRY,
+        error_handler=node_error_handler,
+    )
+
+    graph.add_node(
+        "fetch",
+        fetch_node,
+        timeout=_FETCH_TIMEOUT,
+    )
+    graph.add_node(
+        "parse_record",
+        parse_record_node,
+        timeout=_LLM_TIMEOUT,
+    )
+    graph.add_node(
+        "merge_parse",
+        merge_parse_node,
+        retry_policy=None,
+    )
+    graph.add_node(
+        "plan",
+        plan_node,
+        timeout=_LLM_TIMEOUT,
+    )
+    graph.add_node(
+        "review_plan",
+        review_plan_node,
+        timeout=_LLM_TIMEOUT,
+    )
+    graph.add_node(
+        "validate_plan",
+        validate_plan_node,
+        retry_policy=None,
+    )
+    graph.add_node(
+        "execute",
+        execute_node,
+        retry_policy=None,
+    )
+    graph.add_node(
+        "respond",
+        respond_node,
+        retry_policy=None,
+        error_handler=None,
+    )
 
     graph.add_edge(START, "fetch")
     graph.add_conditional_edges(
@@ -106,9 +172,11 @@ _graph = build_graph()
 
 
 def run(user_query: str) -> dict[str, Any]:
-    final = _graph.invoke(
-        {"user_query": user_query},
-        config={"max_concurrency": PARSE_MAX_WORKERS},
+    final = asyncio.run(
+        _graph.ainvoke(
+            {"user_query": user_query},
+            config={"max_concurrency": PARSE_MAX_WORKERS},
+        )
     )
 
     status = final["status"]

@@ -18,10 +18,11 @@ def fetch_orders(limit: int | None = None) -> list[str]:
 
     logger.info("Fetching orders from %s params=%s", url, params)
 
-    try:
-        response = requests.get(url, params=params, timeout=FETCH_TIMEOUT_SECONDS)
-    except requests.RequestException as exc:
-        raise FetchError(f"Failed to reach customer API at {url}: {exc}") from exc
+    # Let connection/timeout errors propagate for LangGraph RetryPolicy.
+    response = requests.get(url, params=params, timeout=FETCH_TIMEOUT_SECONDS)
+
+    if response.status_code >= 500:
+        response.raise_for_status()
 
     if response.status_code != 200:
         raise FetchError(f"Customer API returned {response.status_code}: {response.text[:500]}")

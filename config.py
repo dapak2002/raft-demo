@@ -12,6 +12,15 @@ LLM_MAX_RETRIES = int(os.getenv("LLM_MAX_RETRIES", "3"))
 
 CUSTOMER_API_URL = os.getenv("CUSTOMER_API_URL", "http://localhost:5001")
 FETCH_TIMEOUT_SECONDS = int(os.getenv("FETCH_TIMEOUT_SECONDS", "30"))
+
+# LangGraph per-node fault tolerance (retries/timeouts are in addition to HTTP/LLM client limits)
+NODE_MAX_RETRIES = int(os.getenv("NODE_MAX_RETRIES", str(LLM_MAX_RETRIES)))
+FETCH_NODE_TIMEOUT_SECONDS = int(
+    os.getenv("FETCH_NODE_TIMEOUT_SECONDS", str(FETCH_TIMEOUT_SECONDS + 15))
+)
+LLM_NODE_TIMEOUT_SECONDS = int(
+    os.getenv("LLM_NODE_TIMEOUT_SECONDS", str(LLM_TIMEOUT_SECONDS + 30))
+)
 PARSE_MAX_CHARS = int(os.getenv("PARSE_MAX_CHARS", "4000"))
 PARSE_CHUNK_OVERLAP = int(os.getenv("PARSE_CHUNK_OVERLAP", "500"))
 PARSE_MAX_WORKERS = int(os.getenv("PARSE_MAX_WORKERS", "5"))

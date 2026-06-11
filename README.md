@@ -34,6 +34,9 @@ All settings live in `config.py`. Environment variables are loaded via `python-d
 | `FETCH_TIMEOUT_SECONDS` | `30`                    | HTTP timeout for fetch                         |
 | `LLM_TIMEOUT_SECONDS`   | `60`                    | OpenRouter request timeout                     |
 | `LLM_MAX_RETRIES`       | `3`                     | OpenRouter retry count                         |
+| `NODE_MAX_RETRIES`      | `3`                     | LangGraph per-node retry attempts (I/O nodes)  |
+| `FETCH_NODE_TIMEOUT_SECONDS` | `45`             | LangGraph wall-clock cap on `fetch` attempts   |
+| `LLM_NODE_TIMEOUT_SECONDS`   | `90`             | LangGraph wall-clock cap on LLM node attempts  |
 | `PARSE_MAX_CHARS`       | `4000`                  | Characters per parse window                    |
 | `PARSE_CHUNK_OVERLAP`   | `500`                   | Overlap between windows                        |
 | `PARSE_MAX_WORKERS`     | `5`                     | Max concurrent `Send(parse_record)` tasks      |
@@ -117,6 +120,7 @@ fetch ──Send(parse_record)──▶ parse_record ──▶ merge_parse ─�
 - **Map-reduce parse** — `fetch` fans out with `Send("parse_record", …)`; each task appends to `parsed_orders` via a custom reducer. `merge_parse` dedupes by `orderId`, sorts, and replaces the list with `("replace", merged)`.
 - **Single plan node** — `plan` runs the full LLM tool-calling loop internally (no separate tool-execution graph node).
 - **Review loop on edges** — `review_plan` only judges completeness; the retry cap (`plan_attempts >= 3`) is enforced by a conditional edge in `graph.py`, so the limit is visible in the graph topology.
+- **Fault tolerance** — I/O nodes (`fetch`, `parse_record`, `plan`, `review_plan`) use LangGraph `RetryPolicy`, `TimeoutPolicy`, and a shared `error_handler` that routes to `respond` after retries are exhausted. Deterministic nodes skip retries. See [Fault tolerance in LangGraph](https://www.langchain.com/blog/fault-tolerance-in-langgraph).
 
 **LLM touchpoints:** `parse_record` (structured extraction), `plan` (tool-only filter planning), `review_plan` (plan completeness check). Everything else is Python.
 
@@ -174,7 +178,8 @@ Supported operators by field (defined in `agent/schema.py`):
 
 ```
 agent/
-  graph.py              # Graph wiring and conditional routing
+  graph.py              # Graph wiring, routing, and fault-tolerance policies
+  fault_tolerance.py    # RetryPolicy, TimeoutPolicy, and error handlers
   schema.py             # Order model, Operator enum, field schema (single source of truth)
   state.py              # AgentState, FilterGroup, QueryPlan, parsed_orders reducer
   llm.py                # OpenRouter client (openai/gpt-oss-120b:exacto)
