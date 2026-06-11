@@ -1,11 +1,50 @@
-"""Fixed order schema — single source of truth for parse, normalize, and query."""
+"""Fixed order schema — single source of truth for parse and query."""
 
+import re
 from enum import Enum
-from typing import Literal
+from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 CanonicalField = Literal["orderId", "buyer", "city", "state", "total", "items"]
+
+_STATE_NAMES: dict[str, str] = {
+    "AL": "Alabama", "AK": "Alaska", "AZ": "Arizona", "AR": "Arkansas",
+    "CA": "California", "CO": "Colorado", "CT": "Connecticut", "DE": "Delaware",
+    "FL": "Florida", "GA": "Georgia", "HI": "Hawaii", "ID": "Idaho",
+    "IL": "Illinois", "IN": "Indiana", "IA": "Iowa", "KS": "Kansas",
+    "KY": "Kentucky", "LA": "Louisiana", "ME": "Maine", "MD": "Maryland",
+    "MA": "Massachusetts", "MI": "Michigan", "MN": "Minnesota", "MS": "Mississippi",
+    "MO": "Missouri", "MT": "Montana", "NE": "Nebraska", "NV": "Nevada",
+    "NH": "New Hampshire", "NJ": "New Jersey", "NM": "New Mexico", "NY": "New York",
+    "NC": "North Carolina", "ND": "North Dakota", "OH": "Ohio", "OK": "Oklahoma",
+    "OR": "Oregon", "PA": "Pennsylvania", "RI": "Rhode Island", "SC": "South Carolina",
+    "SD": "South Dakota", "TN": "Tennessee", "TX": "Texas", "UT": "Utah",
+    "VT": "Vermont", "VA": "Virginia", "WA": "Washington", "WV": "West Virginia",
+    "WI": "Wisconsin", "WY": "Wyoming", "DC": "District of Columbia",
+}
+
+_NAME_TO_CODE = {name.lower(): code for code, name in _STATE_NAMES.items()}
+
+
+def normalize_state(value: str) -> str | None:
+    """Map a state code or full name to a two-letter USPS code."""
+    if not value or not str(value).strip():
+        return None
+
+    code = str(value).strip().upper()
+    if code in _STATE_NAMES:
+        return code
+
+    name = re.sub(r"\s+", " ", str(value).strip().lower())
+    return _NAME_TO_CODE.get(name)
+
+
+def _parse_money_string(value: str) -> float | None:
+    numeric = re.sub(r"[$,\s]", "", value.strip())
+    if numeric and re.fullmatch(r"-?\d+(\.\d+)?", numeric):
+        return float(numeric)
+    return None
 
 
 class Operator(str, Enum):
@@ -19,11 +58,11 @@ class Operator(str, Enum):
 
 
 class Order(BaseModel):
-    """Parsed order record. All fields optional until normalize/merge completes."""
+    """Parsed order record — only the six canonical fields below."""
 
     orderId: str | None = Field(default=None, description="Order identifier")
-    buyer: str | None = Field(default=None, description="Buyer or customer name in title case")
-    city: str | None = Field(default=None, description="City in title case")
+    buyer: str | None = Field(default=None, description="Buyer or customer name")
+    city: str | None = Field(default=None, description="City name")
     state: str | None = Field(
         default=None,
         description="Two-letter uppercase USPS state code",
@@ -37,8 +76,61 @@ class Order(BaseModel):
         description="Product names in the order, one entry per product",
     )
 
+    @field_validator("orderId", "buyer", "city", mode="before")
+    @classmethod
+    def _strip_optional_str(cls, value: Any) -> str | None:
+        if value is None:
+            return None
+        stripped = str(value).strip()
+        return stripped or None
+
+    @field_validator("state", mode="before")
+    @classmethod
+    def _normalize_state(cls, value: Any) -> str | None:
+        if value is None:
+            return None
+        return normalize_state(str(value))
+
+    @field_validator("total", mode="before")
+    @classmethod
+    def _coerce_total(cls, value: Any) -> float | None:
+        if value is None:
+            return None
+        if isinstance(value, bool):
+            return None
+        if isinstance(value, (int, float)):
+            return float(value)
+        if isinstance(value, str):
+            return _parse_money_string(value)
+        return None
+
+    @field_validator("items", mode="before")
+    @classmethod
+    def _coerce_items(cls, value: Any) -> list[str] | None:
+        if value is None:
+            return None
+        if isinstance(value, str):
+            value = [part.strip() for part in value.split(",")]
+        if not isinstance(value, list):
+            return None
+        items = [str(item).strip() for item in value if str(item).strip()]
+        return items or None
+
     def populated_fields(self) -> list[str]:
         return [name for name in CANONICAL_FIELDS if getattr(self, name) is not None]
+
+    def data_score(self) -> int:
+        """Higher score means more populated canonical fields."""
+        score = 0
+        for name in CANONICAL_FIELDS:
+            value = getattr(self, name)
+            if value is None:
+                continue
+            if name == "items":
+                score += 1 + len(value) # probably needs to be weighted differently
+            else:
+                score += 1
+        return score
 
     def to_json(self) -> dict:
         return self.model_dump(mode="json", exclude_none=True)
@@ -95,15 +187,12 @@ FIELD_SPECS: dict[CanonicalField, tuple[str, frozenset[Operator], str]] = {
 CANONICAL_FIELDS: tuple[CanonicalField, ...] = tuple(FIELD_SPECS.keys())
 
 _PARSE_FIELD_LINES: dict[CanonicalField, str] = {
-    "orderId": "order identifier as a string",
-    "buyer": "buyer or customer name in title case",
-    "city": "city name in title case (from Location=City, ST, ship-to lines, etc.)",
-    "state": "two-letter uppercase USPS code (Ohio → OH, Texas → TX)",
-    "total": (
-        "order total as a plain number (no $ or commas); use Total, Grand Total, "
-        "Order Total, Amount Paid, etc."
-    ),
-    "items": "list of product names in the order, one entry per product",
+    "orderId": "order identifier (map Order ID, order_id, etc.)",
+    "buyer": "buyer or customer name (map Customer, Purchaser, etc.)",
+    "city": "city name (map Location, Ship-To city, etc.)",
+    "state": "two-letter USPS code — map Ohio → OH, Texas → TX",
+    "total": "order total as a plain number — map Total, Grand Total, Amount, etc.",
+    "items": "list of product names, one entry per product",
 }
 
 
@@ -118,13 +207,10 @@ def operators_for(field: str) -> frozenset[Operator]:
 
 def parse_prompt() -> str:
     lines = [
-        "Extract order data into exactly these fields — no others:",
+        "Return only these six fields — no others:",
         *[f"- {name}: {_PARSE_FIELD_LINES[name]}" for name in CANONICAL_FIELDS],
         "",
-        "Do not extract dates, zip codes, promo codes, warehouse codes, carriers, "
-        "notes, or any other attributes. Unmappable values are logged as schema "
-        "drift and dropped. Only use information explicitly in the text. Leave "
-        "missing fields null.",
+        "Map whatever labels appear in the source text onto the canonical field names above. Only use information explicitly in the text. Leave missing fields null (do not guess or invent values).",
     ]
     return "\n".join(lines)
 

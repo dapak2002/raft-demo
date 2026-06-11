@@ -7,7 +7,7 @@ from langgraph.types import Send
 from agent.nodes.execute import execute_node
 from agent.nodes.fetch import fetch_node
 from agent.nodes.merge_parse import merge_parse_node
-from agent.nodes.parse import parse_record_node
+from agent.nodes.parse_record import parse_record_node
 from agent.nodes.plan import plan_node
 from agent.nodes.respond import respond_node
 from agent.nodes.review_plan import review_plan_node

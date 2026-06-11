@@ -7,17 +7,22 @@ logger = logging.getLogger(__name__)
 
 
 def validate_plan_node(state: AgentState) -> AgentState:
+    if not state.get("plan_complete"):
+        feedback = state.get("plan_feedback") or "Plan is incomplete."
+        logger.warning("Rejecting incomplete plan: %s", feedback)
+        return {
+            "status": "error",
+            "error": f"Could not build a complete filter plan: {feedback}",
+        }
+
     plan = state.get("plan") or QueryPlan()
 
-    if state.get("match_all"):
-        if plan_has_filters(plan):
-            logger.warning("Ignoring %d filter groups for match-all query", len(plan.groups))
-            return {"plan": QueryPlan(), "match_all": True}
-        logger.info("Match-all query validated with no filters")
-        return {"match_all": True}
-
     if plan_has_filters(plan):
-        logger.info("Query plan validated with %d groups", len(plan.groups))
+        logger.info("Query plan validated with filter tree")
+        return {}
+
+    if state.get("plan_complete"):
+        logger.info("Query plan validated with no filters")
         return {}
 
     logger.warning("No filters produced for query: %s", state["user_query"])

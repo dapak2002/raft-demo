@@ -11,16 +11,12 @@ def execute_node(state: AgentState) -> AgentState:
     parsed_orders = state.get("parsed_orders") or []
     data_query = state.get("plan") or QueryPlan()
 
-    if state.get("match_all") or not plan_has_filters(data_query):
+    if not plan_has_filters(data_query):
         logger.info("No filters; returning all %d orders", len(parsed_orders))
         matched_orders = sorted(parsed_orders, key=Order.sort_key)
         return {"matched_orders": matched_orders, "status": "ok"}
 
-    logger.info(
-        "Applying %d filter groups to %d orders",
-        len(data_query.groups),
-        len(parsed_orders),
-    )
+    logger.info("Applying filter tree to %d orders", len(parsed_orders))
 
     matched_orders = execute_plan(parsed_orders, data_query)
     logger.info("Matched %d/%d orders", len(matched_orders), len(parsed_orders))

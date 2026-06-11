@@ -19,11 +19,8 @@ pip install -r requirements.txt
 Set `OPENROUTER_API_KEY` in your environment or a `.env` file in the project root. The agent expects a customer API at `CUSTOMER_API_URL` (default `http://localhost:5001`).
 
 ```bash
-# Interactive CLI:
 python main.py
-
-# Pass a query directly:
-python main.py "Show me all orders where the buyer was located in Ohio and total value was over 500."
+# prompts: Enter your query:
 ```
 
 ## Configuration
@@ -130,10 +127,10 @@ fetch ──Send(parse_record)──▶ parse_record ──▶ merge_parse ─�
 | Node           | Role                                                                                                           |
 | -------------- | -------------------------------------------------------------------------------------------------------------- |
 | `fetch`        | Pulls raw order strings from the customer API; fans out one `Send` per record                                  |
-| `parse_record` | LLM extraction into fixed fields, then normalization and grounding checks                                    |
+| `parse_record` | LLM structured extraction into the six canonical `Order` fields (Pydantic)                                       |
 | `merge_parse`  | Reduce step: dedupe by `orderId` (keep richest record), sort, replace `parsed_orders`; error if nothing parsed |
 
-Long records are windowed with overlap (`PARSE_MAX_CHARS` / `PARSE_CHUNK_OVERLAP`). After extraction, `field_normalize.py` maps aliases to the fixed schema and logs schema drift for unknown fields. `parse_grounding.py` rejects records whose values are not supported by the source text (hallucination guard).
+Long records are windowed with overlap (`PARSE_MAX_CHARS` / `PARSE_CHUNK_OVERLAP`). The LLM maps source labels onto the six canonical fields defined in `agent/schema.py` (`Order` Pydantic model).
 
 ### Order Lookup Design Caveat
 
@@ -183,11 +180,9 @@ agent/
   llm.py                # OpenRouter client (openai/gpt-oss-120b:exacto)
   services/
     filter_engine.py    # Deterministic filter execution
-    field_normalize.py  # Schema mapping, state normalization, drift logging
-    parse_grounding.py  # Reject extracted values not present in source text
   nodes/
     fetch.py            # Customer API fetch
-    parse.py            # parse_record node (one Send task per record)
+    parse_record.py     # parse_record node (one Send task per record)
     merge_parse.py      # Reduce step after Send fan-out
     plan.py             # Filter planning (internal tool loop)
     review_plan.py

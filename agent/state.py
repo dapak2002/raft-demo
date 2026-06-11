@@ -1,5 +1,4 @@
-import operator
-from typing import Annotated, Any, Literal, NotRequired, TypedDict
+from typing import Annotated, Literal, NotRequired, TypedDict
 
 from pydantic import BaseModel, Field
 
@@ -20,18 +19,22 @@ def parsed_orders_reducer(
 
 
 class Filter(BaseModel):
-    field: str = Field(description="The record field to filter on")
-    operator: Operator = Field(description="The comparison operator")
-    value: str | float | int | bool = Field(description="The value to compare against")
+    field: str
+    operator: Operator
+    value: str | float | int | bool
 
 
 class FilterGroup(BaseModel):
-    logic: Literal["and", "or"]
-    filters: list[Filter] = Field(default_factory=list)
+    operator: Literal["and", "or"]
+    filters: list["FilterNode"] = Field(default_factory=list)
+
+
+FilterNode = Filter | FilterGroup
+FilterGroup.model_rebuild()
 
 
 class QueryPlan(BaseModel):
-    groups: list[FilterGroup] = Field(default_factory=list)
+    filter: FilterGroup | None = None
 
 
 class AgentState(TypedDict):
@@ -45,7 +48,6 @@ class AgentState(TypedDict):
     plan_attempts: NotRequired[int]
     plan_feedback: NotRequired[str | None]
     plan_complete: NotRequired[bool]
-    match_all: NotRequired[bool]
 
     # output
     matched_orders: NotRequired[list[Order]]

@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-import argparse
 import json
 import logging
 import sys
@@ -13,11 +12,7 @@ logging.basicConfig(
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Run the agent graph.")
-    parser.add_argument("query", nargs="?", help="Natural language query")
-    args = parser.parse_args()
-
-    query = args.query or input("Enter your query: ").strip()
+    query = input("Enter your query: ").strip()
     if not query:
         print("No query provided", file=sys.stderr)
         sys.exit(1)

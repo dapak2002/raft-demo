@@ -1,6 +1,8 @@
 """Filter planning tools for the fixed order schema."""
 
 import logging
+from collections.abc import Callable
+from typing import Literal
 
 from langchain_core.tools import tool
 from pydantic import BaseModel
@@ -10,18 +12,27 @@ from agent.schema import (
     CanonicalField,
     Operator,
     is_allowed_field,
+    normalize_state,
     operators_for,
 )
-from agent.services.field_normalize import normalize_state
-from agent.state import Filter, FilterGroup
+from agent.state import Filter, FilterGroup, FilterNode
 
 logger = logging.getLogger(__name__)
 
 
-class MixedOrFilter(BaseModel):
+class FilterInput(BaseModel):
     field: CanonicalField
     operator: Operator
     value: str | float | int | bool
+
+
+class FilterGroupInput(BaseModel):
+    operator: Literal["and", "or"]
+    filters: list["FilterNodeInput"]
+
+
+FilterNodeInput = FilterInput | FilterGroupInput
+FilterGroupInput.model_rebuild()
 
 
 def _validate_field(field: str, operator: Operator) -> str | None:
@@ -38,77 +49,90 @@ def _validate_field(field: str, operator: Operator) -> str | None:
     return None
 
 
+def _validate_node(node: FilterNode) -> str | None:
+    if isinstance(node, Filter):
+        return _validate_field(node.field, node.operator)
+    for child in node.filters:
+        if error := _validate_node(child):
+            return error
+    return None
+
+
 def _coerce_operator(operator: Operator | str) -> Operator:
     return operator if isinstance(operator, Operator) else Operator(operator)
 
 
-def _make_filter(field: str, operator: Operator, value: str | float | int | bool) -> Filter:
+def _leaf(field: str, operator: Operator | str, value: str | float | int | bool) -> Filter:
+    op = _coerce_operator(operator)
     if field == "state" and isinstance(value, str):
-        if code := normalize_state(value):
-            value = code
-    return Filter(field=field, operator=operator, value=value)
+        value = normalize_state(value) or value.strip().upper()
+    return Filter(field=field, operator=op, value=value)
 
 
-def run_add_filter(
-    field: str,
-    operator: Operator | str,
-    value: str | float | int | bool,
-) -> FilterGroup | str:
-    op = _coerce_operator(operator)
+def _normalize_input(item: FilterNodeInput | FilterNode | dict) -> FilterNodeInput | FilterNode:
+    if isinstance(item, (Filter, FilterGroup, FilterInput, FilterGroupInput, dict)):
+        return item
+    return FilterInput(**item)
+
+
+def _parse_node(item: FilterNodeInput | FilterNode) -> FilterNode:
+    if isinstance(item, (Filter, FilterGroup)):
+        return item
+    if isinstance(item, dict):
+        if "filters" in item:
+            return FilterGroup(
+                operator=item["operator"],
+                filters=[_parse_node(child) for child in item["filters"]],
+            )
+        return _leaf(item["field"], item["operator"], item["value"])
+    if isinstance(item, FilterGroupInput):
+        return FilterGroup(
+            operator=item.operator,
+            filters=[_parse_node(child) for child in item.filters],
+        )
+    return _leaf(item.field, item.operator, item.value)
+
+
+def _exec_add_filter(args: dict) -> FilterNode | str:
+    op = _coerce_operator(args["operator"])
+    field = args["field"]
     if error := _validate_field(field, op):
         return error
-
-    filt = _make_filter(field, op, value)
+    filt = _leaf(field, op, args["value"])
     logger.info("Filter: %s %s %s", filt.field, filt.operator.value, filt.value)
-    return FilterGroup(logic="and", filters=[filt])
+    return filt
 
 
-def run_add_or_filter_group(
-    field: str,
-    operator: Operator | str,
-    values: list[str | float | int | bool],
-) -> FilterGroup | str:
-    op = _coerce_operator(operator)
-    if error := _validate_field(field, op):
+def _exec_combine_filters(args: dict) -> FilterNode | str:
+    raw = args["filters"]
+    if len(raw) < 2:
+        return "combine_filters requires at least 2 filters"
+
+    group = FilterGroup(
+        operator=args["operator"],
+        filters=[_parse_node(_normalize_input(item)) for item in raw],
+    )
+    if error := _validate_node(group):
         return error
-
-    group = FilterGroup(
-        logic="or",
-        filters=[_make_filter(field, op, value) for value in values],
+    logger.info(
+        "Filter: %s group with %d child filter(s)",
+        group.operator,
+        len(group.filters),
     )
-    logger.info("Filter: OR group with %d filters on %s", len(group.filters), field)
     return group
 
 
-def run_add_mixed_or_group(filters: list[MixedOrFilter]) -> FilterGroup | str:
-    if len(filters) < 2:
-        return "add_mixed_or_group requires at least 2 filters"
-
-    for item in filters:
-        if error := _validate_field(item.field, item.operator):
-            return error
-
-    group = FilterGroup(
-        logic="or",
-        filters=[_make_filter(item.field, item.operator, item.value) for item in filters],
-    )
-    logger.info("Filter: mixed OR group with %d filters", len(group.filters))
-    return group
+_TOOL_HANDLERS: dict[str, Callable[[dict], FilterNode | str]] = {
+    "add_filter": _exec_add_filter,
+    "combine_filters": _exec_combine_filters,
+}
 
 
-def execute_plan_tool(name: str, args: dict) -> FilterGroup | str:
-    if name == "add_filter":
-        return run_add_filter(**args)
-    if name == "add_or_filter_group":
-        return run_add_or_filter_group(**args)
-    if name == "add_mixed_or_group":
-        raw = args["filters"]
-        filters = [
-            item if isinstance(item, MixedOrFilter) else MixedOrFilter(**item)
-            for item in raw
-        ]
-        return run_add_mixed_or_group(filters)
-    return f"Unknown tool: {name}"
+def execute_plan_tool(name: str, args: dict) -> FilterNode | str:
+    handler = _TOOL_HANDLERS.get(name)
+    if handler is None:
+        return f"Unknown tool: {name}"
+    return handler(args)
 
 
 @tool
@@ -117,24 +141,17 @@ def add_filter(
     operator: Operator,
     value: str | float | int | bool,
 ) -> str:
-    """Add one AND filter condition. Call once per condition."""
+    """Add one filter condition (field, comparison operator, value)."""
     return "pending"
 
 
 @tool
-def add_or_filter_group(
-    field: CanonicalField,
-    operator: Operator,
-    values: list[str | float | int | bool],
+def combine_filters(
+    operator: Literal["and", "or"],
+    filters: list[FilterNodeInput],
 ) -> str:
-    """Add one OR group where the field matches any value (e.g. TX or OH)."""
+    """Combine filters with and/or. Each entry is a filter or a nested filter group."""
     return "pending"
 
 
-@tool
-def add_mixed_or_group(filters: list[MixedOrFilter]) -> str:
-    """Add an OR group across one or more fields (e.g. buyer Chris OR state TX)."""
-    return "pending"
-
-
-PLAN_TOOLS = [add_filter, add_or_filter_group, add_mixed_or_group]
+PLAN_TOOLS = [add_filter, combine_filters]

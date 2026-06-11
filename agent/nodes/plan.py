@@ -4,8 +4,8 @@ from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
 
 from agent.llm import get_llm
 from agent.schema import filter_field_catalog
-from agent.services.filter_engine import plan_from_groups
-from agent.state import AgentState, FilterGroup
+from agent.services.filter_engine import build_query_plan
+from agent.state import AgentState, Filter, FilterGroup, FilterNode
 from agent.tools.create_filter import PLAN_TOOLS, execute_plan_tool
 
 logger = logging.getLogger(__name__)
@@ -14,9 +14,9 @@ SYSTEM = """\
 Convert the user's request into data filters using the provided tools.
 
 Call all required tool calls in a single turn before finishing.
-For AND conditions, call add_filter once per condition.
-For OR on the same field, call add_or_filter_group once.
-For OR across different fields, call add_mixed_or_group once with all alternatives.
+A filter is field + comparison operator + value.
+Use add_filter for single conditions.
+Use combine_filters to group filters with and/or (supports nesting).
 
 Allowed fields (with the operators each supports):
 {fields}
@@ -26,7 +26,9 @@ Use only the field names listed above with their listed operators.
 Guidance:
 - Translate EVERY condition in the request into a filter when applicable
 - Amount conditions like 'over $500' → total gt 500
-- Different filter groups are combined with AND
+- Multiple add_filter calls are combined with AND
+- Same-field OR (e.g. Texas or Ohio) → combine_filters(operator="or", filters=[...])
+- Cross-field OR (e.g. buyer Chris or state TX) → combine_filters(operator="or", filters=[...])
 - Map 'more than' / 'over' → gt, 'at least' → gte, 'less than' → lt, 'at most' → lte
 - state values must be two-letter codes (Texas → TX, Ohio → OH)
 - orderId: use equals (exact id match only)
@@ -34,6 +36,22 @@ Guidance:
 - items: use contains for partial product name (e.g. laptop), equals for exact item
 - If no filters apply, do not call any tools
 - "show all orders" / "list all orders" → no tools (empty plan returns every record)"""
+
+
+def _describe_filter(filter_part: Filter | FilterGroup) -> str:
+    if isinstance(filter_part, Filter):
+        return f"{filter_part.field} {filter_part.operator.value} {filter_part.value!r}"
+    child_count = len(filter_part.filters)
+    label = "conditions" if child_count != 1 else "condition"
+    return f"{filter_part.operator.upper()} group with {child_count} {label}"
+
+
+def _run_plan_tool(name: str, args: dict) -> tuple[FilterNode | None, str]:
+    """Run one filter tool; return (filter, success message) or (None, error)."""
+    result = execute_plan_tool(name, args)
+    if isinstance(result, (Filter, FilterGroup)):
+        return result, f"OK — added filter: {_describe_filter(result)}"
+    return None, f"Error — {result}"
 
 
 def plan_node(state: AgentState) -> AgentState:
@@ -56,7 +74,7 @@ def plan_node(state: AgentState) -> AgentState:
         )
 
     llm = get_llm().bind_tools(PLAN_TOOLS)
-    groups: list[FilterGroup] = []
+    accumulated_filters: list[FilterNode] = []
 
     logger.info("Starting query plan for: %s", user_query)
 
@@ -69,15 +87,13 @@ def plan_node(state: AgentState) -> AgentState:
             break
 
         for call in tool_calls:
-            result = execute_plan_tool(call["name"], call["args"])
-            if isinstance(result, FilterGroup):
-                groups.append(result)
-                content = f"Added {result.logic} group with {len(result.filters)} filter(s)"
-            else:
-                content = result
-            messages.append(ToolMessage(content=content, tool_call_id=call["id"]))
+            filter_part, tool_message = _run_plan_tool(call["name"], call["args"])
+            if filter_part is not None:
+                accumulated_filters.append(filter_part)
+            messages.append(ToolMessage(content=tool_message, tool_call_id=call["id"]))
 
-    plan = plan_from_groups(groups)
-    logger.info("Plan built with %d groups", len(plan.groups))
+    plan = build_query_plan(accumulated_filters)
+    top_level_count = len(plan.filter.filters) if plan.filter else 0
+    logger.info("Query plan built with %d top-level filter(s)", top_level_count)
 
     return {"plan": plan, "plan_complete": False, "plan_feedback": None}

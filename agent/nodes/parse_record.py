@@ -7,9 +7,6 @@ from langchain_core.runnables import Runnable
 
 from agent.llm import get_llm
 from agent.schema import Order, parse_prompt
-from agent.services.field_normalize import JsonValue
-from agent.services.field_normalize import normalize_order
-from agent.services.parse_grounding import is_grounded
 from agent.state import ParseRecordState
 from config import PARSE_CHUNK_OVERLAP, PARSE_MAX_CHARS
 
@@ -45,28 +42,27 @@ def _windows(text: str) -> list[str]:
     return [text[i : i + PARSE_MAX_CHARS] for i in range(0, len(text), step)]
 
 
+def _merge_partials(partials: list[Order]) -> Order | None:
+    merged: dict = {}
+    for partial in partials:
+        merged.update(partial.model_dump(exclude_none=True))
+    if not merged:
+        return None
+    return Order.model_validate(merged)
+
+
 def _parse_text(text: str, chain: Runnable) -> Order | None:
-    fields: dict[str, JsonValue] = {}
+    partials: list[Order] = []
 
     for window in _windows(text):
         try:
-            partial: Order = chain.invoke({"text": window})
-            for key, value in partial.model_dump(exclude_none=True).items():
-                fields[key] = value
+            partials.append(chain.invoke({"text": window}))
         except Exception as exc:
             logger.warning("Parse window failed: %s", exc)
 
-    if not fields:
+    order = _merge_partials(partials)
+    if order is None or not order.populated_fields():
         logger.warning("No fields extracted from record")
-        return None
-
-    order = normalize_order(fields, text)
-    if order is None:
-        logger.warning("No fields after normalization: %s", fields)
-        return None
-
-    if not is_grounded(order, text):
-        logger.warning("Ungrounded record rejected: %s", order.to_json())
         return None
 
     return order

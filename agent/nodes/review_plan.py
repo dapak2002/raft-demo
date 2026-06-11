@@ -17,54 +17,32 @@ User request: {user_query}
 Allowed fields:
 {fields}
 
-Current plan (groups of filters only):
+Current plan (filter tree):
 {plan_json}
 
 Rules:
-- "show all orders" / "list all" / no criteria → empty plan is correct; set match_all=true, complete=true
+- "show all orders" / "list all" / no criteria → empty plan is correct; set complete=true
 - Filtered requests → first list every condition in the request (states, buyers,
   ids, amount limits like "over $500"), then check each one has a matching filter
   in the plan. If ANY condition is missing, set complete=false and name it in
-  'missing'; set match_all=false
+  'missing'
 - Use only the allowed fields listed above
 - state filters should use two-letter codes (Texas → TX)
-- complete=true means the plan is ready to execute
-- match_all is YOUR output flag, not a field in the plan JSON
-- match_all must be false whenever the plan contains any filters"""
+- complete=true means the plan is ready to execute"""
 
 
 class PlanReview(BaseModel):
     complete: bool = Field(description="True when the plan is ready to execute")
-    match_all: bool = Field(
-        default=False,
-        description="True when the user wants every order with no filtering",
-    )
     missing: str | None = Field(
         default=None,
         description="What is wrong with the plan when complete is false",
     )
 
 
-def _infer_match_all(review: PlanReview, empty_plan: bool) -> bool:
-    if not empty_plan:
-        return False
-    if review.match_all:
-        return True
-
-    missing = (review.missing or "").lower()
-    if any(
-        phrase in missing
-        for phrase in ("match_all", "all order", "no filter", "every order", "no filtering")
-    ):
-        return True
-    return False
-
-
 def review_plan_node(state: AgentState) -> AgentState:
     user_query = state["user_query"]
     data_query = state.get("plan") or QueryPlan()
     attempts = state.get("plan_attempts", 0)
-    empty_plan = not plan_has_filters(data_query)
     field_catalog = filter_field_catalog()
 
     chain = get_llm().with_structured_output(PlanReview)
@@ -76,15 +54,9 @@ def review_plan_node(state: AgentState) -> AgentState:
         )
     )
 
-    match_all = _infer_match_all(review, empty_plan)
-    accepted = review.complete or (match_all and empty_plan)
-
-    if accepted:
-        logger.info("Plan review passed (match_all=%s)", match_all)
-        return {
-            "plan_complete": True,
-            "match_all": match_all,
-        }
+    if review.complete:
+        logger.info("Plan review passed")
+        return {"plan_complete": True}
 
     feedback = review.missing or "Plan is incomplete."
     logger.warning("Plan review incomplete: %s", feedback)
@@ -92,6 +64,5 @@ def review_plan_node(state: AgentState) -> AgentState:
     return {
         "plan_complete": False,
         "plan_attempts": attempts + 1,
-        "match_all": match_all,
         "plan_feedback": feedback,
     }

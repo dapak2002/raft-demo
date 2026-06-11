@@ -1,7 +1,6 @@
 import logging
 
 from agent.schema import Order
-from agent.services.field_normalize import order_data_score
 from agent.state import AgentState
 
 logger = logging.getLogger(__name__)
@@ -24,14 +23,14 @@ def _dedupe_orders(orders: list[Order]) -> list[Order]:
             by_id[key] = order
             continue
 
-        if order_data_score(order) > order_data_score(existing):
+        if order.data_score() > existing.data_score():
             logger.warning(
                 "Duplicate orderId %s from bulk fetch: keeping richer record "
                 "(score %d > %d), dropping %s — single-order queries still resolve "
                 "via orderId filter",
                 key,
-                order_data_score(order),
-                order_data_score(existing),
+                order.data_score(),
+                existing.data_score(),
                 existing,
             )
             by_id[key] = order
@@ -41,8 +40,8 @@ def _dedupe_orders(orders: list[Order]) -> list[Order]:
                 "(score %d >= %d), dropping %s — single-order queries still resolve "
                 "via orderId filter",
                 key,
-                order_data_score(existing),
-                order_data_score(order),
+                existing.data_score(),
+                order.data_score(),
                 order,
             )
 
