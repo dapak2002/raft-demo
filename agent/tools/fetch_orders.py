@@ -27,13 +27,13 @@ def fetch_orders(limit: int | None = None) -> list[str]:
 
     if response.status_code != 200:
         raise FetchError(
-            f"Customer API at {url} returned {response.status_code}: {response.text[:500]}"
+            f"Order data service at {url} returned {response.status_code}: {response.text[:500]}"
         )
 
     try:
         payload = response.json()
     except ValueError as exc:
-        raise FetchError(f"Customer API at {url} response is not valid JSON") from exc
+        raise FetchError(f"Order data service at {url} response is not valid JSON") from exc
 
     if isinstance(payload, dict):
         log_payload_drift(payload)
@@ -46,7 +46,7 @@ def fetch_orders(limit: int | None = None) -> list[str]:
     raw_orders = payload.get("raw_orders") or []
     if not isinstance(raw_orders, list):
         raise FetchError(
-            f"Customer API at {url} expected raw_orders list, "
+            f"Order data service at {url} expected raw_orders list, "
             f"got {type(raw_orders).__name__}"
         )
 

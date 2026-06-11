@@ -171,31 +171,61 @@ def build_graph():
 
 _graph = build_graph()
 
+#FRONTEND STREAMING NODE ACTIVITY
 
-def run(user_query: str) -> dict[str, Any]:
-    safe_query = prepare_user_query(user_query)
-    if not safe_query:
-        return {
-            "status": "error",
-            "error": "No query provided.",
-            "user_query": user_query,
-            "data_query": QueryPlan().model_dump(mode="json"),
-            "orders": [],
-        }
+# Nodes omitted from the live execution trace (internal routing / recovery).
+_SKIP_TRACE_NODES = frozenset({"__default_error_handler__"})
+_SKIP_TRACE_ON_ERROR = frozenset({"respond"})
 
-    final = asyncio.run(
-        _graph.ainvoke(
-            {"user_query": safe_query},
-            config={"max_concurrency": PARSE_MAX_WORKERS},
-        )
-    )
+# Human-readable labels for trace events (mirrors fault_tolerance._NODE_LABELS).
+TRACE_NODE_LABELS: dict[str, str] = {
+    "fetch": "Fetch orders",
+    "parse_record": "Parse records",
+    "merge_parse": "Merge parsed data",
+    "plan": "Build filter plan",
+    "review_plan": "Review plan",
+    "validate_plan": "Validate plan",
+    "execute": "Apply filters",
+    "respond": "Complete",
+}
 
-    status = final["status"]
+
+def _resolve_trace_node(node: str, patch: dict[str, Any]) -> str | None:
+    """Map LangGraph internal nodes to user-facing trace steps."""
+    if node in _SKIP_TRACE_NODES:
+        return patch.get("failed_node") or "fetch"
+    if patch.get("status") == "error" and node in _SKIP_TRACE_ON_ERROR:
+        return None
+    return node
+
+
+PIPELINE_NODES: tuple[str, ...] = (
+    "fetch",
+    "parse_record",
+    "merge_parse",
+    "plan",
+    "review_plan",
+    "validate_plan",
+    "execute",
+    "respond",
+)
+
+
+def _empty_result(user_query: str, error: str) -> dict[str, Any]:
+    return {
+        "status": "error",
+        "error": error,
+        "user_query": user_query,
+        "data_query": QueryPlan().model_dump(mode="json"),
+        "orders": [],
+    }
+
+
+def format_result(final: dict[str, Any], safe_query: str) -> dict[str, Any]:
     matched_orders = final.get("matched_orders") or []
     data_query = final.get("plan") or QueryPlan()
-
     return {
-        "status": status,
+        "status": final.get("status", "ok"),
         "error": final.get("error"),
         "user_query": safe_query,
         "data_query": data_query.model_dump(mode="json"),
@@ -204,3 +234,122 @@ def run(user_query: str) -> dict[str, Any]:
             for order in matched_orders
         ],
     }
+
+
+def _patch_list_len(value: Any) -> int | None:
+    """Length of a list patch, including reducer replace tuples."""
+    if value is None:
+        return None
+    if isinstance(value, tuple) and len(value) == 2 and value[0] == "replace":
+        items = value[1]
+        return len(items) if items is not None else 0
+    if isinstance(value, list):
+        return len(value)
+    return None
+
+
+def _node_event(node: str, patch: dict[str, Any]) -> dict[str, Any]:
+    event: dict[str, Any] = {"event": "node", "node": node}
+    if patch.get("status") == "error":
+        event["status"] = "error"
+    if patch.get("error"):
+        event["error"] = patch["error"]
+    if "raw_orders" in patch:
+        event["raw_count"] = len(patch["raw_orders"] or [])
+    if "parsed_orders" in patch:
+        parsed_count = _patch_list_len(patch["parsed_orders"])
+        if parsed_count is not None:
+            event["parsed_count"] = parsed_count
+    if "matched_orders" in patch:
+        event["order_count"] = len(patch["matched_orders"] or [])
+    if patch.get("plan_feedback"):
+        event["plan_feedback"] = patch["plan_feedback"]
+    if patch.get("plan_attempts") is not None:
+        event["plan_attempts"] = patch["plan_attempts"]
+    return event
+
+
+async def stream_run(user_query: str):
+    """Yield SSE-friendly events: node updates and a final done payload."""
+    safe_query = prepare_user_query(user_query)
+    if not safe_query:
+        yield {"event": "error", "message": "No query provided."}
+        yield {
+            "event": "done",
+            "result": _empty_result(user_query, "No query provided."),
+        }
+        return
+
+    final: dict[str, Any] | None = None
+    step = 0
+    visit_counts: dict[str, int] = {}
+    async for mode, chunk in _graph.astream(
+        {"user_query": safe_query},
+        stream_mode=["updates", "values"],
+        config={"max_concurrency": PARSE_MAX_WORKERS},
+    ):
+        if mode == "updates":
+            for node, patch in chunk.items():
+                patch = patch if isinstance(patch, dict) else {}
+                trace_node = _resolve_trace_node(node, patch)
+                if trace_node is None:
+                    continue
+                step += 1
+                visit_counts[trace_node] = visit_counts.get(trace_node, 0) + 1
+                event = _node_event(trace_node, patch)
+                event["step"] = step
+                event["visit"] = visit_counts[trace_node]
+                event["label"] = TRACE_NODE_LABELS.get(
+                    trace_node, trace_node.replace("_", " ")
+                )
+                yield event
+        else:
+            final = chunk
+
+    if final is None:
+        yield {
+            "event": "error",
+            "message": "Agent finished without a final state.",
+        }
+        yield {
+            "event": "done",
+            "result": _empty_result(
+                safe_query, "Agent finished without a final state."
+            ),
+        }
+        return
+
+    yield {"event": "done", "result": format_result(final, safe_query)}
+
+
+def iter_stream_events(user_query: str):
+    """Bridge async stream_run to a sync iterator (for Flask SSE)."""
+
+    async def _consume():
+        async for event in stream_run(user_query):
+            yield event
+
+    loop = asyncio.new_event_loop()
+    agen = _consume().__aiter__()
+    try:
+        while True:
+            try:
+                yield loop.run_until_complete(agen.__anext__())
+            except StopAsyncIteration:
+                break
+    finally:
+        loop.close()
+
+
+def run(user_query: str) -> dict[str, Any]:
+    safe_query = prepare_user_query(user_query)
+    if not safe_query:
+        return _empty_result(user_query, "No query provided.")
+
+    final = asyncio.run(
+        _graph.ainvoke(
+            {"user_query": safe_query},
+            config={"max_concurrency": PARSE_MAX_WORKERS},
+        )
+    )
+    return format_result(final, safe_query)

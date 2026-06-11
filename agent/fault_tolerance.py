@@ -85,6 +85,18 @@ def build_timeout_policy(run_timeout: float) -> TimeoutPolicy:
     return TimeoutPolicy(run_timeout=run_timeout)
 
 
+_NODE_LABELS = {
+    "fetch": "Fetch orders",
+    "parse_record": "Parse records",
+    "merge_parse": "Merge parsed data",
+    "plan": "Build filter plan",
+    "review_plan": "Review plan",
+    "validate_plan": "Validate plan",
+    "execute": "Apply filters",
+    "respond": "Complete",
+}
+
+
 def _user_error_message(error: NodeError) -> str:
     """Map internal exceptions to short, user-facing messages."""
     exc = error.error
@@ -97,17 +109,19 @@ def _user_error_message(error: NodeError) -> str:
             url = _request_url(exc)
             if isinstance(exc, requests.ConnectionError):
                 return (
-                    f"Failed to reach customer API at {url}. "
-                    "Check that the server is running."
+                    "Couldn't reach the order data service "
+                    f"(expected at {url})."
                 )
             if isinstance(exc, requests.Timeout):
-                return f"Customer API at {url} timed out after {exc}."
-            return f"Customer API request to {url} failed."
+                return f"The order data service timed out ({url})."
+            return f"The order data service returned an error ({url})."
 
     if isinstance(exc, NodeTimeoutError):
-        return f"{node} timed out after {exc.elapsed:.0f}s."
+        label = _NODE_LABELS.get(node, node.replace("_", " "))
+        return f"{label} timed out after {exc.elapsed:.0f}s."
 
-    return f"{node} failed: {exc}"
+    label = _NODE_LABELS.get(node, node.replace("_", " "))
+    return f"{label} failed: {exc}"
 
 
 def node_error_handler(state: AgentState, error: NodeError) -> Command:
@@ -116,6 +130,10 @@ def node_error_handler(state: AgentState, error: NodeError) -> Command:
     # Recovered via Command(goto=...) — log the message only, no traceback.
     logger.warning("%s failed after retries: %s", error.node, message)
     return Command(
-        update={"status": "error", "error": message},
+        update={
+            "status": "error",
+            "error": message,
+            "failed_node": error.node,
+        },
         goto="respond",
     )

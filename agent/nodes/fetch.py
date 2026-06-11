@@ -22,11 +22,11 @@ async def fetch_node(state: AgentState, runtime: Runtime) -> AgentState:
     raw_orders = [text for text in raw_orders if text.strip()]
 
     if not raw_orders:
-        logger.warning("Customer API returned no orders")
+        logger.warning("Order data service returned no orders")
         return {
             "raw_orders": [],
             "status": "error",
-            "error": "Customer API returned no orders.",
+            "error": "Order data service returned no orders.",
         }
 
     return {"raw_orders": raw_orders, "status": "ok"}

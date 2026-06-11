@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Order Query Agent</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Ubuntu:wght@400;500;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="/static/style.css" />
+  </head>
+  <body>
+    <main class="layout">
+      <header class="header">
+        <h1>Order Query Agent</h1>
+        <p class="subtitle">
+          Natural language queries over unstructured order data. Node execution
+          order updates live below.
+        </p>
+      </header>
+
+      <section class="panel query-panel">
+        <label class="label" for="query">Your query</label>
+        <div class="query-row">
+          <textarea
+            id="query"
+            rows="1"
+            placeholder="Show me all orders where the buyer was located in Ohio and total value was over 500."
+          ></textarea>
+          <button id="submit" type="button">Run</button>
+        </div>
+      </section>
+
+      <section class="panel">
+        <h2>Execution trace</h2>
+        <p id="trace-status" class="trace-status">Idle — run a query to see node order.</p>
+        <ol id="trace" class="trace"></ol>
+      </section>
+
+      <section id="error-panel" class="panel error-panel hidden">
+        <h2 id="error-title">Couldn't complete your query</h2>
+        <p id="error-text"></p>
+      </section>
+
+      <section class="panel">
+        <div class="results-header">
+          <h2>Orders</h2>
+          <span id="status-badge" class="badge badge-idle">idle</span>
+        </div>
+        <div class="table-wrap">
+          <table id="orders-table">
+            <thead>
+              <tr>
+                <th>Order ID</th>
+                <th>Buyer</th>
+                <th>City</th>
+                <th>State</th>
+                <th>Total</th>
+                <th>Items</th>
+              </tr>
+            </thead>
+            <tbody id="orders-body">
+              <tr class="empty-row">
+                <td colspan="6">Run a query to see matching orders.</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <details class="panel raw-panel">
+        <summary>Raw response JSON</summary>
+        <pre id="raw-json">{}</pre>
+      </details>
+    </main>
+
+    <script src="/static/app.js"></script>
+  </body>
+</html>

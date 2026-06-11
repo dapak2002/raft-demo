@@ -23,6 +23,15 @@ python main.py
 # prompts: Enter your query:
 ```
 
+**3. Web UI (optional)**
+
+```bash
+python web_app.py
+# open http://localhost:8080
+```
+
+The UI streams an ordered execution trace (including plan/review loops), surfaces errors, and renders matching orders in a table.
+
 ## Configuration
 
 All settings live in `config.py`. Environment variables are loaded via `python-dotenv` (from a `.env` file or your shell), but you can also edit `config.py` directly to change defaults — for example `MODEL`, `OPENROUTER_BASE_URL`, timeouts, parse window sizes, and retry limits.
@@ -216,6 +225,8 @@ agent/
     create_filter.py    # Filter tool schemas + execution helpers
 config.py               # Settings — env-backed defaults, editable directly
 main.py
+web_app.py              # Flask UI with SSE node progress
+static/                 # Frontend assets (index.html, app.js, style.css)
 ```
 
 ## Future Improvements
