@@ -62,14 +62,18 @@ def _coerce_operator(operator: Operator | str) -> Operator:
     return operator if isinstance(operator, Operator) else Operator(operator)
 
 
-def _leaf(field: str, operator: Operator | str, value: str | float | int | bool) -> Filter:
+def _leaf(
+    field: str, operator: Operator | str, value: str | float | int | bool
+) -> Filter:
     op = _coerce_operator(operator)
     if field == "state" and isinstance(value, str):
         value = normalize_state(value) or value.strip().upper()
     return Filter(field=field, operator=op, value=value)
 
 
-def _normalize_input(item: FilterNodeInput | FilterNode | dict) -> FilterNodeInput | FilterNode:
+def _normalize_input(
+    item: FilterNodeInput | FilterNode | dict,
+) -> FilterNodeInput | FilterNode:
     if isinstance(item, (Filter, FilterGroup, FilterInput, FilterGroupInput, dict)):
         return item
     return FilterInput(**item)

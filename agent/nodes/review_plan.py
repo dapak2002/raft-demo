@@ -6,7 +6,6 @@ from pydantic import BaseModel, Field
 from agent.fault_tolerance import log_node_attempt
 from agent.llm import get_llm
 from agent.schema import filter_field_catalog
-from agent.services.filter_engine import plan_has_filters
 from agent.state import AgentState, QueryPlan
 
 logger = logging.getLogger(__name__)

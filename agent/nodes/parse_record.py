@@ -45,7 +45,9 @@ def _windows(text: str) -> list[str]:
     return [text[i : i + PARSE_MAX_CHARS] for i in range(0, len(text), step)]
 
 
-def _merge_partials(partials: list[ParseExtraction | Order]) -> tuple[Order | None, dict[str, str]]:
+def _merge_partials(
+    partials: list[ParseExtraction | Order],
+) -> tuple[Order | None, dict[str, str]]:
     merged: dict = {}
     extras: dict[str, str] = {}
 
@@ -61,7 +63,9 @@ def _merge_partials(partials: list[ParseExtraction | Order]) -> tuple[Order | No
     return Order.model_validate(merged), extras
 
 
-async def _parse_text(text: str, chain: Runnable) -> tuple[Order | None, dict[str, str]]:
+async def _parse_text(
+    text: str, chain: Runnable
+) -> tuple[Order | None, dict[str, str]]:
     partials: list[ParseExtraction | Order] = []
 
     for window in _windows(text):

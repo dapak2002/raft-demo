@@ -55,7 +55,9 @@ def merge_parse_node(state: AgentState) -> AgentState:
     parts = state.get("parsed_orders") or []
     merged = _dedupe_orders(parts)
 
-    logger.info("Merged %d parsed records from %d raw orders", len(merged), len(raw_orders))
+    logger.info(
+        "Merged %d parsed records from %d raw orders", len(merged), len(raw_orders)
+    )
 
     if not merged:
         return {
