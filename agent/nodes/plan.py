@@ -5,6 +5,7 @@ from langgraph.runtime import Runtime
 
 from agent.fault_tolerance import log_node_attempt
 from agent.llm import get_llm
+from agent.llm_limits import plan_tool_turn_limit, prepare_plan_feedback
 from agent.schema import filter_field_catalog
 from agent.services.filter_engine import build_query_plan
 from agent.state import AgentState, Filter, FilterGroup, FilterNode
@@ -27,17 +28,19 @@ Use only the field names listed above with their listed operators.
 
 Guidance:
 - Translate EVERY condition in the request into a filter when applicable
-- Amount conditions like 'over $500' → total gt 500
-- Multiple add_filter calls are combined with AND
-- Same-field OR (e.g. Texas or Ohio) → combine_filters(operator="or", filters=[...])
-- Cross-field OR (e.g. buyer Chris or state TX) → combine_filters(operator="or", filters=[...])
-- Map 'more than' / 'over' → gt, 'at least' → gte, 'less than' → lt, 'at most' → lte
-- state values must be two-letter codes (Texas → TX, Ohio → OH)
-- orderId: use equals (exact id match only)
+- Total range constraints → pair gte/lte (or gt/lt) on total
+- For multi-condition queries, prefer ONE combine_filters(operator="and", ...) with the full tree
+- Same-field OR → combine_filters(operator="or", filters=[...])
+- Cross-field OR → combine_filters(operator="or", filters=[...])
+- Do NOT emit separate add_filter calls for conditions already inside combine_filters
+- Simple single-condition queries may use add_filter alone; multiple add_filter calls are combined with AND
+- Map comparative language to operators: more than/over → gt, at least → gte, less than → lt, at most → lte
+- state values must be two-letter USPS codes
+- orderId: use equals for exact match
 - buyer / city: use contains for partial matches
-- items: use contains for partial product name (e.g. laptop), equals for exact item
+- items: use contains for partial match, equals for exact item
 - If no filters apply, do not call any tools
-- "show all orders" / "list all orders" → no tools (empty plan returns every record)"""
+- Match-all requests with no criteria → no tools (empty plan returns every record)"""
 
 
 def _describe_filter(filter_part: Filter | FilterGroup) -> str:
@@ -73,6 +76,7 @@ async def plan_node(state: AgentState, runtime: Runtime) -> AgentState:
         HumanMessage(content=user_query),
     ]
     if feedback:
+        feedback = prepare_plan_feedback(feedback)
         messages.append(
             HumanMessage(
                 content=(
@@ -84,10 +88,11 @@ async def plan_node(state: AgentState, runtime: Runtime) -> AgentState:
 
     llm = get_llm().bind_tools(PLAN_TOOLS)
     accumulated_filters: list[FilterNode] = []
+    max_turns = plan_tool_turn_limit()
 
     logger.info("Starting query plan for: %s", user_query)
 
-    while True:
+    for _ in range(max_turns):
         response = await llm.ainvoke(messages)
         messages.append(response)
 
@@ -100,6 +105,12 @@ async def plan_node(state: AgentState, runtime: Runtime) -> AgentState:
             if filter_part is not None:
                 accumulated_filters.append(filter_part)
             messages.append(ToolMessage(content=tool_message, tool_call_id=call["id"]))
+    else:
+        logger.warning(
+            "Plan tool loop hit max turns (%d); using %d filter(s) collected so far",
+            max_turns,
+            len(accumulated_filters),
+        )
 
     plan = build_query_plan(accumulated_filters)
     top_level_count = len(plan.filter.filters) if plan.filter else 0

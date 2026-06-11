@@ -4,6 +4,7 @@ import logging
 import sys
 
 from agent.graph import run
+from agent.llm_limits import prepare_user_query
 
 logging.basicConfig(
     level=logging.INFO,
@@ -14,7 +15,7 @@ logging.getLogger("langgraph.pregel._retry").setLevel(logging.WARNING)
 
 
 def main() -> None:
-    query = input("Enter your query: ").strip()
+    query = prepare_user_query(input("Enter your query: "))
     if not query:
         print("No query provided", file=sys.stderr)
         sys.exit(1)

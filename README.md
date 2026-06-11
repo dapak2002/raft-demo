@@ -40,8 +40,13 @@ All settings live in `config.py`. Environment variables are loaded via `python-d
 | `LLM_NODE_TIMEOUT_SECONDS`   | `90`                    | LangGraph wall-clock cap on LLM node attempts  |
 | `PARSE_MAX_CHARS`            | `4000`                  | Characters per parse window                    |
 | `PARSE_CHUNK_OVERLAP`        | `500`                   | Overlap between windows                        |
+| `PARSE_MAX_WINDOWS`          | `20`                    | Max LLM parse calls per order record           |
 | `PARSE_MAX_WORKERS`          | `5`                     | Max concurrent `Send(parse_record)` tasks      |
 | `MAX_PLAN_ATTEMPTS`          | `3`                     | Review loop retry cap (enforced on graph edge) |
+| `USER_QUERY_MAX_CHARS`       | `2000`                  | Max natural-language query length              |
+| `PLAN_MAX_TOOL_TURNS`        | `8`                     | Max tool-calling rounds in `plan`              |
+| `PLAN_FEEDBACK_MAX_CHARS`    | `500`                   | Max review feedback injected into re-plan      |
+| `REVIEW_PLAN_MAX_JSON_CHARS` | `8000`                  | Max serialized filter tree in review prompt    |
 
 
 The graph compiles once at import and is reused across queries.
@@ -139,7 +144,7 @@ fetch ──Send(parse_record)──▶ parse_record ──▶ merge_parse ─�
 | `merge_parse`  | Reduce step: dedupe by `orderId` (keep richest record), sort, replace `parsed_orders`; error if nothing parsed |
 
 
-Long records are windowed with overlap (`PARSE_MAX_CHARS` / `PARSE_CHUNK_OVERLAP`). The LLM maps source labels onto the six canonical fields defined in `agent/schema.py` (`Order` Pydantic model). Unmapped source labels (e.g. `Warehouse`) are captured in `additional_fields` and logged as schema drift — they do not affect filtering.
+Long records are windowed with overlap (`PARSE_MAX_CHARS` / `PARSE_CHUNK_OVERLAP`), capped at `PARSE_MAX_WINDOWS` LLM calls per record. User queries and plan prompts are bounded via `agent/llm_limits.py`. The LLM maps source labels onto the six canonical fields defined in `agent/schema.py` (`Order` Pydantic model). Unmapped source labels (e.g. `Warehouse`) are captured in `additional_fields` and logged as schema drift — they do not affect filtering.
 
 ### Order Lookup Design Caveat
 
@@ -162,7 +167,7 @@ Single-order requests (e.g. "show order 1005") do not call the provided `GET /ap
 | `respond`       | Sets final `status`                                                                      |
 
 
-Filter groups are combined with **AND**. Within a group, conditions use **AND** or **OR** depending on group logic.
+The LLM builds a **boolean expression tree** for each query: `Filter` leaves hold field comparisons (`state equals OH`, `total gt 500`), and `FilterGroup` nodes combine children with **AND** or **OR**. That tree is stored in `QueryPlan` and walked deterministically by `filter_engine.py` at execute time — no LLM in the final filter step.
 
 
 | Tool               | Use                                                                 |
@@ -193,8 +198,9 @@ agent/
   schema.py             # Order model, Operator enum, field schema (single source of truth)
   state.py              # AgentState, FilterGroup, QueryPlan, parsed_orders reducer
   llm.py                # OpenRouter client (openai/gpt-oss-120b:exacto)
+  llm_limits.py         # Prompt truncation and parse/plan bounds
   services/
-    filter_engine.py    # Deterministic filter execution
+    filter_engine.py    # Boolean expression tree evaluation
     schema_drift.py     # Logs unexpected API / parse fields
   nodes/
     fetch.py            # Customer API fetch
@@ -216,6 +222,7 @@ main.py
 
 - **Chat / session state** — add LangGraph checkpointer so follow-up messages can reuse cached `parsed_orders` without re-fetching
 - **Input guardrails** — reject prompt injection for each LLM call and could add an intent check for off-topic requests before the graph runs
+- **Introduce Tokenizer** — use tokenizer instead of max characters for calculating input size
 - **Richer query options** — nested conditions, sorting, aggregates, order comparison
 - **Semantic field/item search** — RAG tool so queries like "lighting" match orders with "lamp"
 - **Eval harness** — golden prompt sets per node so model/workflow changes do not regress behavior

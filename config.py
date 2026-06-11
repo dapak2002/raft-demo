@@ -23,5 +23,12 @@ LLM_NODE_TIMEOUT_SECONDS = int(
 )
 PARSE_MAX_CHARS = int(os.getenv("PARSE_MAX_CHARS", "4000"))
 PARSE_CHUNK_OVERLAP = int(os.getenv("PARSE_CHUNK_OVERLAP", "500"))
+PARSE_MAX_WINDOWS = int(os.getenv("PARSE_MAX_WINDOWS", "20"))
 PARSE_MAX_WORKERS = int(os.getenv("PARSE_MAX_WORKERS", "5"))
 MAX_PLAN_ATTEMPTS = int(os.getenv("MAX_PLAN_ATTEMPTS", "3"))
+
+# LLM prompt bounds (context-window hardening)
+USER_QUERY_MAX_CHARS = int(os.getenv("USER_QUERY_MAX_CHARS", "2000"))
+PLAN_MAX_TOOL_TURNS = int(os.getenv("PLAN_MAX_TOOL_TURNS", "8"))
+PLAN_FEEDBACK_MAX_CHARS = int(os.getenv("PLAN_FEEDBACK_MAX_CHARS", "500"))
+REVIEW_PLAN_MAX_JSON_CHARS = int(os.getenv("REVIEW_PLAN_MAX_JSON_CHARS", "8000"))

@@ -90,8 +90,26 @@ def plan_has_filters(plan: QueryPlan) -> bool:
     return bool(plan.filter and plan.filter.filters)
 
 
+def _leaf_key(filt: Filter) -> tuple[str, str, str | float | int | bool]:
+    return (filt.field, filt.operator.value, filt.value)
+
+
+def _collect_leaves(node: FilterNode) -> list[Filter]:
+    if isinstance(node, Filter):
+        return [node]
+    return [leaf for child in node.filters for leaf in _collect_leaves(child)]
+
+
+def _group_depth(node: FilterNode) -> int:
+    if isinstance(node, Filter):
+        return 0
+    if not node.filters:
+        return 0
+    return 1 + max(_group_depth(child) for child in node.filters)
+
+
 def build_query_plan(filter_parts: list[FilterNode]) -> QueryPlan:
-    """Build a QueryPlan from tool-call filters, deduplicating repeats."""
+    """Build a QueryPlan from tool-call filters, preferring nested groups over flat duplicates."""
     seen: set[str] = set()
     unique: list[FilterNode] = []
     for part in filter_parts:
@@ -103,6 +121,38 @@ def build_query_plan(filter_parts: list[FilterNode]) -> QueryPlan:
 
     if not unique:
         return QueryPlan()
+
+    groups = [part for part in unique if isinstance(part, FilterGroup)]
+    leaves = [part for part in unique if isinstance(part, Filter)]
+    all_leaf_keys = {
+        _leaf_key(leaf) for leaf in _collect_leaves(part) for part in unique
+    }
+    flat_leaf_keys = {_leaf_key(leaf) for leaf in leaves}
+
+    if groups:
+        ranked = sorted(
+            groups,
+            key=lambda group: (_group_depth(group), len(_collect_leaves(group))),
+            reverse=True,
+        )
+        for candidate in ranked:
+            candidate_keys = {_leaf_key(leaf) for leaf in _collect_leaves(candidate)}
+            if candidate_keys == all_leaf_keys:
+                return QueryPlan(filter=candidate)
+            if (
+                candidate.operator == "and"
+                and candidate_keys >= flat_leaf_keys
+                and flat_leaf_keys
+            ):
+                return QueryPlan(filter=candidate)
+
+        best = ranked[0]
+        best_keys = {_leaf_key(leaf) for leaf in _collect_leaves(best)}
+        extra = [leaf for leaf in leaves if _leaf_key(leaf) not in best_keys]
+        if extra:
+            return QueryPlan(filter=FilterGroup(operator="and", filters=[best, *extra]))
+        return QueryPlan(filter=best)
+
     if len(unique) == 1:
         root = unique[0]
         if isinstance(root, Filter):

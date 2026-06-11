@@ -5,6 +5,7 @@ from pydantic import BaseModel, Field
 
 from agent.fault_tolerance import log_node_attempt
 from agent.llm import get_llm
+from agent.llm_limits import prepare_plan_json
 from agent.schema import filter_field_catalog
 from agent.state import AgentState, QueryPlan
 
@@ -22,13 +23,14 @@ Current plan (filter tree):
 {plan_json}
 
 Rules:
-- "show all orders" / "list all" / no criteria → empty plan is correct; set complete=true
-- Filtered requests → first list every condition in the request (states, buyers,
-  ids, amount limits like "over $500"), then check each one has a matching filter
-  in the plan. If ANY condition is missing, set complete=false and name it in
-  'missing'
+- Match-all requests with no criteria → empty plan is correct; set complete=true
+- Filtered requests → identify every condition in the request, then verify each is
+  represented in the filter tree (including nested and/or groups). If ANY condition
+  is missing, set complete=false and name it in 'missing'
+- Disjunctive conditions on the same field must appear under an or group, not as
+  conflicting top-level equals filters
 - Use only the allowed fields listed above
-- state filters should use two-letter codes (Texas → TX)
+- state filters should use two-letter codes
 - complete=true means the plan is ready to execute"""
 
 
@@ -47,12 +49,13 @@ async def review_plan_node(state: AgentState, runtime: Runtime) -> AgentState:
     attempts = state.get("plan_attempts", 0)
     field_catalog = filter_field_catalog()
 
+    plan_json = prepare_plan_json(data_query.model_dump_json(indent=2))
     chain = get_llm().with_structured_output(PlanReview)
     review = await chain.ainvoke(
         REVIEW_PROMPT.format(
             user_query=user_query,
             fields=field_catalog,
-            plan_json=data_query.model_dump_json(indent=2),
+            plan_json=plan_json,
         )
     )
 

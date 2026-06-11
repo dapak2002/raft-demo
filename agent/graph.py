@@ -10,6 +10,7 @@ from agent.fault_tolerance import (
     build_timeout_policy,
     node_error_handler,
 )
+from agent.llm_limits import prepare_user_query
 from agent.nodes.execute import execute_node
 from agent.nodes.fetch import fetch_node
 from agent.nodes.merge_parse import merge_parse_node
@@ -172,9 +173,19 @@ _graph = build_graph()
 
 
 def run(user_query: str) -> dict[str, Any]:
+    safe_query = prepare_user_query(user_query)
+    if not safe_query:
+        return {
+            "status": "error",
+            "error": "No query provided.",
+            "user_query": user_query,
+            "data_query": QueryPlan().model_dump(mode="json"),
+            "orders": [],
+        }
+
     final = asyncio.run(
         _graph.ainvoke(
-            {"user_query": user_query},
+            {"user_query": safe_query},
             config={"max_concurrency": PARSE_MAX_WORKERS},
         )
     )
@@ -186,7 +197,7 @@ def run(user_query: str) -> dict[str, Any]:
     return {
         "status": status,
         "error": final.get("error"),
-        "user_query": user_query,
+        "user_query": safe_query,
         "data_query": data_query.model_dump(mode="json"),
         "orders": [
             order.to_json() if isinstance(order, Order) else order

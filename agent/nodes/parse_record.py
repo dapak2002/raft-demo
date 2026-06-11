@@ -8,10 +8,11 @@ from langgraph.runtime import Runtime
 
 from agent.fault_tolerance import is_transient_error, log_node_attempt
 from agent.llm import get_llm
+from agent.llm_limits import parse_windows
 from agent.schema import Order, ParseExtraction, parse_prompt
 from agent.services.schema_drift import log_parse_drift
 from agent.state import ParseRecordState
-from config import PARSE_CHUNK_OVERLAP, PARSE_MAX_CHARS
+from config import PARSE_CHUNK_OVERLAP
 
 logger = logging.getLogger(__name__)
 
@@ -37,14 +38,6 @@ def _get_chain() -> Runnable:
     return _chain
 
 
-def _windows(text: str) -> list[str]:
-    if len(text) <= PARSE_MAX_CHARS:
-        return [text]
-
-    step = max(1, PARSE_MAX_CHARS - PARSE_CHUNK_OVERLAP)
-    return [text[i : i + PARSE_MAX_CHARS] for i in range(0, len(text), step)]
-
-
 def _merge_partials(
     partials: list[ParseExtraction | Order],
 ) -> tuple[Order | None, dict[str, str]]:
@@ -68,7 +61,7 @@ async def _parse_text(
 ) -> tuple[Order | None, dict[str, str]]:
     partials: list[ParseExtraction | Order] = []
 
-    for window in _windows(text):
+    for window in parse_windows(text, PARSE_CHUNK_OVERLAP):
         try:
             partial = await chain.ainvoke({"text": window})
         except Exception as exc:
