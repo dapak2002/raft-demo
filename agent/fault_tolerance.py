@@ -84,7 +84,7 @@ def build_retry_policy(
 def build_timeout_policy(run_timeout: float) -> TimeoutPolicy:
     return TimeoutPolicy(run_timeout=run_timeout)
 
-
+# for the frontend to display the node names in the trace
 _NODE_LABELS = {
     "fetch": "Fetch orders",
     "parse_record": "Parse records",

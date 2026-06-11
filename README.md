@@ -110,16 +110,12 @@ The upstream API response looks like this — the agent has to make sense of the
 The graph has two phases — **ingest** (fetch → parse → merge) and **query** (plan → review → validate → execute). All paths route to a single `respond` node with `status` of `ok` or `error`.
 
 ```
-fetch ──Send(parse_record)──▶ parse_record ──▶ merge_parse ──▶ plan ◀──┐
-  │              │ (fan-out)      │ (reduce)       │                    │
-  │              └─ one task      dedupe/sort      review_plan ─────────┘
-  │                per record                      (max 3 attempts on edge)
-  │                                                   │
-  │                                                   ▼
-  │                                             validate_plan ──▶ execute ──▶ respond
-  │                                                   │
-  └───────────────────────────────────────────────────┴──────────────────────────▶ respond
-         (fetch / parse / plan errors)
+START → fetch ──Send(N)──▶ parse_record ──▶ merge_parse ──▶ plan ◀──────┐
+                                                               │        │
+                                                            review_plan ┘
+                                                               │
+                                                               ▼
+                                                    validate_plan → execute → respond → END
 ```
 
 **State flow:** `raw_orders` → `parsed_orders` → `plan` → `matched_orders`

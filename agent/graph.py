@@ -77,7 +77,7 @@ def route_after_review_plan(state: AgentState) -> str:
 
 def route_after_validate_plan(state: AgentState) -> str:
     if state.get("status") == "error":
-        return "error"
+        return "respond"
     return "execute"
 
 
@@ -141,27 +141,18 @@ def build_graph():
     graph.add_conditional_edges(
         "merge_parse",
         route_after_merge_parse,
-        {
-            "respond": "respond",
-            "plan": "plan",
-        },
+        ["respond", "plan"],
     )
     graph.add_edge("plan", "review_plan")
     graph.add_conditional_edges(
         "review_plan",
         route_after_review_plan,
-        {
-            "plan": "plan",
-            "validate_plan": "validate_plan",
-        },
+        ["plan", "validate_plan"],
     )
     graph.add_conditional_edges(
         "validate_plan",
         route_after_validate_plan,
-        {
-            "execute": "execute",
-            "error": "respond",
-        },
+        ["execute", "respond"],
     )
     graph.add_edge("execute", "respond")
     graph.add_edge("respond", END)
