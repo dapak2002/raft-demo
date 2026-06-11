@@ -1,20 +1,29 @@
 """LangGraph fault-tolerance policies and error handlers."""
 
+import asyncio
 import logging
 
+import httpx
 import requests
 from langgraph.errors import NodeError, NodeTimeoutError
 from langgraph.types import Command, RetryPolicy, TimeoutPolicy, default_retry_on
+from openai import APIConnectionError, APIStatusError, APITimeoutError, RateLimitError
 
 from agent.state import AgentState
 from agent.tools.fetch_orders import FetchError
-from config import CUSTOMER_API_URL
+from config import CUSTOMER_API_URL, NODE_MAX_RETRIES
 
 logger = logging.getLogger(__name__)
 
 
-def transient_retry_on(exc: BaseException) -> bool:
-    """Retry transient failures; skip deterministic customer-API errors."""
+def _request_url(exc: requests.RequestException) -> str:
+    if exc.request is not None and exc.request.url:
+        return exc.request.url
+    return f"{CUSTOMER_API_URL.rstrip('/')}/api/orders"
+
+
+def is_transient_error(exc: BaseException) -> bool:
+    """Whether an exception is worth retrying (shared by RetryPolicy and parse windows)."""
     if isinstance(exc, FetchError):
         return False
     # requests.ConnectionError subclasses OSError, which default_retry_on skips.
@@ -26,13 +35,26 @@ def transient_retry_on(exc: BaseException) -> bool:
         return False
     if isinstance(exc, NodeTimeoutError):
         return True
+    if isinstance(exc, (TimeoutError, asyncio.TimeoutError)):
+        return True
+    if isinstance(exc, (APIConnectionError, APITimeoutError, RateLimitError)):
+        return True
+    if isinstance(exc, APIStatusError) and exc.status_code is not None:
+        return 500 <= exc.status_code < 600
+    if isinstance(exc, httpx.TimeoutException):
+        return True
+    if isinstance(exc, httpx.HTTPStatusError):
+        return 500 <= exc.response.status_code < 600
     return default_retry_on(exc)
+
+
+def transient_retry_on(exc: BaseException) -> bool:
+    """Retry transient failures; skip deterministic customer-API errors."""
+    return is_transient_error(exc)
 
 
 def log_node_attempt(node: str, runtime) -> None:
     """Log LangGraph RetryPolicy re-attempts (attempt 1 is the initial run)."""
-    from config import NODE_MAX_RETRIES
-
     info = getattr(runtime, "execution_info", None)
     if info is None or info.node_attempt <= 1:
         return
@@ -72,15 +94,15 @@ def _user_error_message(error: NodeError) -> str:
         if isinstance(exc, FetchError):
             return str(exc)
         if isinstance(exc, requests.RequestException):
-            base = CUSTOMER_API_URL.rstrip("/")
+            url = _request_url(exc)
             if isinstance(exc, requests.ConnectionError):
                 return (
-                    f"Failed to reach customer API at {base}. "
+                    f"Failed to reach customer API at {url}. "
                     "Check that the server is running."
                 )
             if isinstance(exc, requests.Timeout):
-                return f"Customer API at {base} timed out after {exc}."
-            return f"Customer API request to {base} failed."
+                return f"Customer API at {url} timed out after {exc}."
+            return f"Customer API request to {url} failed."
 
     if isinstance(exc, NodeTimeoutError):
         return f"{node} timed out after {exc.elapsed:.0f}s."

@@ -127,7 +127,7 @@ class Order(BaseModel):
             if value is None:
                 continue
             if name == "items":
-                score += 1 + len(value) # probably needs to be weighted differently
+                score += 1 + len(value)
             else:
                 score += 1
         return score
@@ -139,6 +139,18 @@ class Order(BaseModel):
         if self.orderId is not None:
             return str(self.orderId)
         return str(self.to_json())
+
+
+class ParseExtraction(Order):
+    """LLM parse output — canonical fields plus unmapped source labels."""
+
+    additional_fields: dict[str, str] = Field(
+        default_factory=dict,
+        description=(
+            "Labeled fields from the source text that do not map to the six "
+            "canonical fields — e.g. Warehouse, Ship-from. Empty if none."
+        ),
+    )
 
 
 # name → (type label, allowed operators, description for planners)
@@ -207,10 +219,14 @@ def operators_for(field: str) -> frozenset[Operator]:
 
 def parse_prompt() -> str:
     lines = [
-        "Return only these six fields — no others:",
+        "Map source labels onto these six canonical fields:",
         *[f"- {name}: {_PARSE_FIELD_LINES[name]}" for name in CANONICAL_FIELDS],
         "",
-        "Map whatever labels appear in the source text onto the canonical field names above. Only use information explicitly in the text. Leave missing fields null (do not guess or invent values).",
+        "Also set additional_fields to any other labeled key-value pairs in the "
+        "source that do not fit above (use an empty object if none).",
+        "",
+        "Only use information explicitly in the text. Leave missing canonical fields "
+        "null (do not guess or invent values).",
     ]
     return "\n".join(lines)
 

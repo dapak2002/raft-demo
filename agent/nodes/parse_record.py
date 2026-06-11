@@ -6,9 +6,10 @@ from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.runnables import Runnable
 from langgraph.runtime import Runtime
 
-from agent.fault_tolerance import log_node_attempt
+from agent.fault_tolerance import is_transient_error, log_node_attempt
 from agent.llm import get_llm
-from agent.schema import Order, parse_prompt
+from agent.schema import Order, ParseExtraction, parse_prompt
+from agent.services.schema_drift import log_parse_drift
 from agent.state import ParseRecordState
 from config import PARSE_CHUNK_OVERLAP, PARSE_MAX_CHARS
 
@@ -32,7 +33,7 @@ _chain: Runnable | None = None
 def _get_chain() -> Runnable:
     global _chain
     if _chain is None:
-        _chain = PARSE_PROMPT | get_llm().with_structured_output(Order)
+        _chain = PARSE_PROMPT | get_llm().with_structured_output(ParseExtraction)
     return _chain
 
 
@@ -44,30 +45,44 @@ def _windows(text: str) -> list[str]:
     return [text[i : i + PARSE_MAX_CHARS] for i in range(0, len(text), step)]
 
 
-def _merge_partials(partials: list[Order]) -> Order | None:
+def _merge_partials(partials: list[ParseExtraction | Order]) -> tuple[Order | None, dict[str, str]]:
     merged: dict = {}
+    extras: dict[str, str] = {}
+
     for partial in partials:
-        merged.update(partial.model_dump(exclude_none=True))
+        merged.update(
+            partial.model_dump(exclude_none=True, exclude={"additional_fields"})
+        )
+        extras.update(getattr(partial, "additional_fields", None) or {})
+
     if not merged:
-        return None
-    return Order.model_validate(merged)
+        return None, extras
+
+    return Order.model_validate(merged), extras
 
 
-async def _parse_text(text: str, chain: Runnable) -> Order | None:
-    partials: list[Order] = []
+async def _parse_text(text: str, chain: Runnable) -> tuple[Order | None, dict[str, str]]:
+    partials: list[ParseExtraction | Order] = []
 
     for window in _windows(text):
         try:
-            partials.append(await chain.ainvoke({"text": window}))
+            partial = await chain.ainvoke({"text": window})
         except Exception as exc:
+            if is_transient_error(exc):
+                raise
             logger.warning("Parse window failed: %s", exc)
+            continue
+        if partial is None:
+            logger.warning("Parse window returned no structured output")
+            continue
+        partials.append(partial)
 
-    order = _merge_partials(partials)
+    order, extras = _merge_partials(partials)
     if order is None or not order.populated_fields():
         logger.warning("No fields extracted from record")
-        return None
+        return None, extras
 
-    return order
+    return order, extras
 
 
 async def parse_record_node(
@@ -80,10 +95,12 @@ async def parse_record_node(
     if not text:
         return {"parsed_orders": []}
 
-    order = await _parse_text(text, _get_chain())
+    order, extras = await _parse_text(text, _get_chain())
     if order is None:
+        log_parse_drift(extras)
         return {"parsed_orders": []}
 
+    log_parse_drift(extras, order_id=order.orderId)
     logger.info(
         "Parsed record %s with fields: %s",
         order.sort_key(),

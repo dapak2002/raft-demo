@@ -1,4 +1,3 @@
-import asyncio
 import logging
 
 from langgraph.runtime import Runtime
@@ -17,7 +16,7 @@ async def fetch_node(state: AgentState, runtime: Runtime) -> AgentState:
     log_node_attempt("fetch", runtime)
     logger.info("Node: fetch (bulk /api/orders)")
 
-    raw_orders = await asyncio.to_thread(fetch_orders)
+    raw_orders = fetch_orders()
 
     # Blank records would become empty Send tasks downstream.
     raw_orders = [text for text in raw_orders if text.strip()]

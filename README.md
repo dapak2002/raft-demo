@@ -1,4 +1,4 @@
-# Raft AI Agent Coding Challenge
+# Order Query Agent
 
 ## Overview
 
@@ -27,20 +27,22 @@ python main.py
 
 All settings live in `config.py`. Environment variables are loaded via `python-dotenv` (from a `.env` file or your shell), but you can also edit `config.py` directly to change defaults — for example `MODEL`, `OPENROUTER_BASE_URL`, timeouts, parse window sizes, and retry limits.
 
-| Variable                | Default                 | Description                                    |
-| ----------------------- | ----------------------- | ---------------------------------------------- |
-| `OPENROUTER_API_KEY`    | —                       | Required                                       |
-| `CUSTOMER_API_URL`      | `http://localhost:5001` | Customer API base URL                          |
-| `FETCH_TIMEOUT_SECONDS` | `30`                    | HTTP timeout for fetch                         |
-| `LLM_TIMEOUT_SECONDS`   | `60`                    | OpenRouter request timeout                     |
-| `LLM_MAX_RETRIES`       | `3`                     | OpenRouter retry count                         |
-| `NODE_MAX_RETRIES`      | `3`                     | LangGraph per-node retry attempts (I/O nodes)  |
-| `FETCH_NODE_TIMEOUT_SECONDS` | `45`             | LangGraph wall-clock cap on `fetch` attempts   |
-| `LLM_NODE_TIMEOUT_SECONDS`   | `90`             | LangGraph wall-clock cap on LLM node attempts  |
-| `PARSE_MAX_CHARS`       | `4000`                  | Characters per parse window                    |
-| `PARSE_CHUNK_OVERLAP`   | `500`                   | Overlap between windows                        |
-| `PARSE_MAX_WORKERS`     | `5`                     | Max concurrent `Send(parse_record)` tasks      |
-| `MAX_PLAN_ATTEMPTS`     | `3`                     | Review loop retry cap (enforced on graph edge) |
+
+| Variable                     | Default                 | Description                                    |
+| ---------------------------- | ----------------------- | ---------------------------------------------- |
+| `OPENROUTER_API_KEY`         | —                       | Required                                       |
+| `CUSTOMER_API_URL`           | `http://localhost:5001` | Customer API base URL                          |
+| `FETCH_TIMEOUT_SECONDS`      | `30`                    | HTTP timeout for fetch                         |
+| `LLM_TIMEOUT_SECONDS`        | `60`                    | OpenRouter request timeout                     |
+| `LLM_MAX_RETRIES`            | `3`                     | OpenRouter retry count                         |
+| `NODE_MAX_RETRIES`           | `3`                     | LangGraph per-node retry attempts (I/O nodes)  |
+| `FETCH_NODE_TIMEOUT_SECONDS` | `45`                    | LangGraph wall-clock cap on `fetch` attempts   |
+| `LLM_NODE_TIMEOUT_SECONDS`   | `90`                    | LangGraph wall-clock cap on LLM node attempts  |
+| `PARSE_MAX_CHARS`            | `4000`                  | Characters per parse window                    |
+| `PARSE_CHUNK_OVERLAP`        | `500`                   | Overlap between windows                        |
+| `PARSE_MAX_WORKERS`          | `5`                     | Max concurrent `Send(parse_record)` tasks      |
+| `MAX_PLAN_ATTEMPTS`          | `3`                     | Review loop retry cap (enforced on graph edge) |
+
 
 The graph compiles once at import and is reused across queries.
 
@@ -78,9 +80,9 @@ Show me all orders where the buyer was located in Ohio and total value was over 
 }
 ```
 
-**OR query** — `orders from texas or ohio` uses `add_or_filter_group` and returns orders in TX and OH.
+**OR query** — `orders from texas or ohio` uses `combine_filters(operator="or", …)` and returns orders in TX and OH.
 
-**Cross-field OR** — `orders from chris or texas` uses `add_mixed_or_group` on buyer and state.
+**Cross-field OR** — `orders from chris or texas` uses `combine_filters(operator="or", …)` on buyer and state.
 
 **Match-all** — `show all orders` is detected during plan review (`match_all=true`); empty `data_query` returns every parsed order.
 
@@ -117,10 +119,11 @@ fetch ──Send(parse_record)──▶ parse_record ──▶ merge_parse ─�
 **State flow:** `raw_orders` → `parsed_orders` → `plan` → `matched_orders`
 
 **LangGraph patterns:**
+
 - **Map-reduce parse** — `fetch` fans out with `Send("parse_record", …)`; each task appends to `parsed_orders` via a custom reducer. `merge_parse` dedupes by `orderId`, sorts, and replaces the list with `("replace", merged)`.
 - **Single plan node** — `plan` runs the full LLM tool-calling loop internally (no separate tool-execution graph node).
 - **Review loop on edges** — `review_plan` only judges completeness; the retry cap (`plan_attempts >= 3`) is enforced by a conditional edge in `graph.py`, so the limit is visible in the graph topology.
-- **Fault tolerance** — I/O nodes (`fetch`, `parse_record`, `plan`, `review_plan`) use LangGraph `RetryPolicy`, `TimeoutPolicy`, and a shared `error_handler` that routes to `respond` after retries are exhausted. Deterministic nodes skip retries. See [Fault tolerance in LangGraph](https://www.langchain.com/blog/fault-tolerance-in-langgraph).
+- **Fault tolerance** — I/O nodes (`fetch`, `parse_record`, `plan`, `review_plan`) use LangGraph `RetryPolicy`, `TimeoutPolicy`, and a shared `error_handler` that routes to `respond` after retries are exhausted. Deterministic nodes skip retries.
 
 **LLM touchpoints:** `parse_record` (structured extraction), `plan` (tool-only filter planning), `review_plan` (plan completeness check). Everything else is Python.
 
@@ -128,13 +131,15 @@ fetch ──Send(parse_record)──▶ parse_record ──▶ merge_parse ─�
 
 ### Ingest phase
 
+
 | Node           | Role                                                                                                           |
 | -------------- | -------------------------------------------------------------------------------------------------------------- |
 | `fetch`        | Pulls raw order strings from the customer API; fans out one `Send` per record                                  |
-| `parse_record` | LLM structured extraction into the six canonical `Order` fields (Pydantic)                                       |
+| `parse_record` | LLM structured extraction into the six canonical `Order` fields (Pydantic)                                     |
 | `merge_parse`  | Reduce step: dedupe by `orderId` (keep richest record), sort, replace `parsed_orders`; error if nothing parsed |
 
-Long records are windowed with overlap (`PARSE_MAX_CHARS` / `PARSE_CHUNK_OVERLAP`). The LLM maps source labels onto the six canonical fields defined in `agent/schema.py` (`Order` Pydantic model).
+
+Long records are windowed with overlap (`PARSE_MAX_CHARS` / `PARSE_CHUNK_OVERLAP`). The LLM maps source labels onto the six canonical fields defined in `agent/schema.py` (`Order` Pydantic model). Unmapped source labels (e.g. `Warehouse`) are captured in `additional_fields` and logged as schema drift — they do not affect filtering.
 
 ### Order Lookup Design Caveat
 
@@ -147,23 +152,27 @@ Single-order requests (e.g. "show order 1005") do not call the provided `GET /ap
 
 ### Query phase
 
-| Node            | Role                                                                                              |
-| --------------- | ------------------------------------------------------------------------------------------------- |
-| `plan`          | LLM tool-calling loop in one node; builds `plan` (`QueryPlan`)                                    |
-| `review_plan`   | Validates plan completeness, detects match-all queries; retry cap enforced on graph edge          |
-| `validate_plan` | Accepts match-all (clears stray filters); errors if a filtered query produced no filters            |
-| `execute`       | Applies the plan in Python (`agent/services/filter_engine.py`)                                    |
-| `respond`       | Sets final `status`                                                                               |
+
+| Node            | Role                                                                                     |
+| --------------- | ---------------------------------------------------------------------------------------- |
+| `plan`          | LLM tool-calling loop in one node; builds `plan` (`QueryPlan`)                           |
+| `review_plan`   | Validates plan completeness, detects match-all queries; retry cap enforced on graph edge |
+| `validate_plan` | Accepts match-all (clears stray filters); errors if a filtered query produced no filters |
+| `execute`       | Applies the plan in Python (`agent/services/filter_engine.py`)                           |
+| `respond`       | Sets final `status`                                                                      |
+
 
 Filter groups are combined with **AND**. Within a group, conditions use **AND** or **OR** depending on group logic.
 
-| Tool                  | Use                                                       |
-| --------------------- | --------------------------------------------------------- |
-| `add_filter`          | One AND condition (e.g. state = OH, total > 500)          |
-| `add_or_filter_group` | Same-field OR in one call (e.g. Texas or Ohio)            |
-| `add_mixed_or_group`  | Cross-field OR in one call (e.g. buyer Chris or state TX) |
+
+| Tool               | Use                                                                 |
+| ------------------ | ------------------------------------------------------------------- |
+| `add_filter`       | One condition (e.g. state = OH, total > 500)                        |
+| `combine_filters`  | Group conditions with AND or OR — same-field or cross-field         |
+
 
 Supported operators by field (defined in `agent/schema.py`):
+
 
 | Field   | Operators                            |
 | ------- | ------------------------------------ |
@@ -173,6 +182,7 @@ Supported operators by field (defined in `agent/schema.py`):
 | state   | equals, not_equals                   |
 | total   | equals, not_equals, gt, gte, lt, lte |
 | items   | equals, not_equals, contains         |
+
 
 ## Project layout
 
@@ -185,6 +195,7 @@ agent/
   llm.py                # OpenRouter client (openai/gpt-oss-120b:exacto)
   services/
     filter_engine.py    # Deterministic filter execution
+    schema_drift.py     # Logs unexpected API / parse fields
   nodes/
     fetch.py            # Customer API fetch
     parse_record.py     # parse_record node (one Send task per record)
@@ -204,7 +215,8 @@ main.py
 ## Future Improvements
 
 - **Chat / session state** — add LangGraph checkpointer so follow-up messages can reuse cached `parsed_orders` without re-fetching
-- **Semantic field/item search** — RAG tool so queries like "lighting" match orders with "lamp"
-- **Input guardrails** — reject prompt injection and off-topic requests before the graph runs
+- **Input guardrails** — reject prompt injection for each LLM call and could add an intent check for off-topic requests before the graph runs
 - **Richer query options** — nested conditions, sorting, aggregates, order comparison
-- **Eval harness** — unit tests per node so model/workflow changes do not regress behavior
+- **Semantic field/item search** — RAG tool so queries like "lighting" match orders with "lamp"
+- **Eval harness** — golden prompt sets per node so model/workflow changes do not regress behavior
+
