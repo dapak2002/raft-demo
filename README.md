@@ -244,10 +244,10 @@ agent/
     parse_record.py     # parse_record node (one Send task per record)
     merge_parse.py      # Reduce step after Send fan-out
     plan.py             # Filter planning (internal tool loop)
-    review_plan.py
-    validate_plan.py
-    execute.py
-    respond.py
+    review_plan.py      # LLM completeness check; sets plan_complete or plan_feedback
+    validate_plan.py    # Rejects incomplete plans; allows match-all (empty filter tree)
+    execute.py          # Applies filter tree in Python; sets matched_orders
+    respond.py          # Terminal node; confirms final status before END
   tools/
     fetch_orders.py
     create_filter.py    # Filter tool schemas + execution helpers
