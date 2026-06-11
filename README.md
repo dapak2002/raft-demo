@@ -6,7 +6,7 @@ The customer API returns orders as messy free-form text. This agent closes that 
 
 The LLM is deliberately kept out of the final answer. It parses text and proposes filters; Python applies those filters and formats the response. That split keeps output deterministic and easier to reason about.
 
-## Running locally
+## Quick start
 
 **1. Install dependencies**
 
@@ -14,16 +14,23 @@ The LLM is deliberately kept out of the final answer. It parses text and propose
 pip install -r requirements.txt
 ```
 
-**2. Run the agent**
+**2. Set credentials**
 
-Set `OPENROUTER_API_KEY` in your environment or a `.env` file in the project root. The agent expects a customer API at `CUSTOMER_API_URL` (default `http://localhost:5001`).
+Create a `.env` file in the project root (or export in your shell):
+
+```
+OPENROUTER_API_KEY=your-key-here
+CUSTOMER_API_URL=http://localhost:5001   # optional; this is the default
+```
+
+**3. Run the agent**
 
 ```bash
 python main.py
 # prompts: Enter your query:
 ```
 
-**3. Web UI (optional)**
+**4. Web UI (optional)**
 
 ```bash
 python web_app.py
@@ -31,34 +38,6 @@ python web_app.py
 ```
 
 The UI streams an ordered execution trace (including plan/review loops), surfaces errors, and renders matching orders in a table.
-
-## Configuration
-
-All settings live in `config.py`. Environment variables are loaded via `python-dotenv` (from a `.env` file or your shell), but you can also edit `config.py` directly to change defaults — for example `MODEL`, `OPENROUTER_BASE_URL`, timeouts, parse window sizes, and retry limits.
-
-
-| Variable                     | Default                 | Description                                    |
-| ---------------------------- | ----------------------- | ---------------------------------------------- |
-| `OPENROUTER_API_KEY`         | —                       | Required                                       |
-| `CUSTOMER_API_URL`           | `http://localhost:5001` | Customer API base URL                          |
-| `FETCH_TIMEOUT_SECONDS`      | `30`                    | HTTP timeout for fetch                         |
-| `LLM_TIMEOUT_SECONDS`        | `60`                    | OpenRouter request timeout                     |
-| `LLM_MAX_RETRIES`            | `3`                     | OpenRouter retry count                         |
-| `NODE_MAX_RETRIES`           | `3`                     | LangGraph per-node retry attempts (I/O nodes)  |
-| `FETCH_NODE_TIMEOUT_SECONDS` | `45`                    | LangGraph wall-clock cap on `fetch` attempts   |
-| `LLM_NODE_TIMEOUT_SECONDS`   | `90`                    | LangGraph wall-clock cap on LLM node attempts  |
-| `PARSE_MAX_CHARS`            | `4000`                  | Characters per parse window                    |
-| `PARSE_CHUNK_OVERLAP`        | `500`                   | Overlap between windows                        |
-| `PARSE_MAX_WINDOWS`          | `20`                    | Max LLM parse calls per order record           |
-| `PARSE_MAX_WORKERS`          | `5`                     | Max concurrent `Send(parse_record)` tasks      |
-| `MAX_PLAN_ATTEMPTS`          | `3`                     | Review loop retry cap (enforced on graph edge) |
-| `USER_QUERY_MAX_CHARS`       | `2000`                  | Max natural-language query length              |
-| `PLAN_MAX_TOOL_TURNS`        | `8`                     | Max tool-calling rounds in `plan`              |
-| `PLAN_FEEDBACK_MAX_CHARS`    | `500`                   | Max review feedback injected into re-plan      |
-| `REVIEW_PLAN_MAX_JSON_CHARS` | `8000`                  | Max serialized filter tree in review prompt    |
-
-
-The graph compiles once at import and is reused across queries.
 
 ## Example
 
@@ -76,29 +55,42 @@ Show me all orders where the buyer was located in Ohio and total value was over 
   "error": null,
   "user_query": "Show me all orders where the buyer was located in Ohio and total value was over 500.",
   "data_query": {
-    "groups": [
-      {
-        "logic": "and",
-        "filters": [
-          { "field": "state", "operator": "equals", "value": "OH" },
-          { "field": "total", "operator": "gt", "value": 500 }
-        ]
-      }
-    ]
+    "filter": {
+      "operator": "and",
+      "filters": [
+        { "field": "state", "operator": "equals", "value": "OH" },
+        { "field": "total", "operator": "gt", "value": 500 }
+      ]
+    }
   },
   "orders": [
-    { "orderId": "1001", "buyer": "John Davis", "state": "OH", "total": 742.1 },
-    { "orderId": "1003", "buyer": "Mike Turner", "state": "OH", "total": 1299.99 },
-    { "orderId": "1005", "buyer": "Chris Myers", "state": "OH", "total": 512.0 }
+    {
+      "orderId": "1001",
+      "buyer": "John Davis",
+      "city": "Columbus",
+      "state": "OH",
+      "total": 742.1,
+      "items": ["laptop", "hdmi cable"]
+    },
+    {
+      "orderId": "1003",
+      "buyer": "Mike Turner",
+      "city": "Cleveland",
+      "state": "OH",
+      "total": 1299.99,
+      "items": ["gaming pc", "mouse"]
+    },
+    {
+      "orderId": "1005",
+      "buyer": "Chris Myers",
+      "city": "Cincinnati",
+      "state": "OH",
+      "total": 512.0,
+      "items": ["monitor", "desk lamp"]
+    }
   ]
 }
 ```
-
-**OR query** — `orders from texas or ohio` uses `combine_filters(operator="or", …)` and returns orders in TX and OH.
-
-**Cross-field OR** — `orders from chris or texas` uses `combine_filters(operator="or", …)` on buyer and state.
-
-**Match-all** — `show all orders` is detected during plan review (`match_all=true`); empty `data_query` returns every parsed order.
 
 **Error cases** — `status` is `"error"` with a message and empty `orders` when fetch fails, nothing could be parsed, or a filtered query could not produce any filter conditions. `main.py` exits with code 1 on error.
 
@@ -198,6 +190,42 @@ Supported operators by field (defined in `agent/schema.py`):
 | items   | equals, not_equals, contains         |
 
 
+## Configuration
+
+Only two values come from the environment — the OpenRouter API key and the customer API URL. Everything else is a plain variable in `config.py`; edit the file directly to tune timeouts, retry limits, parse window sizes, and prompt bounds.
+
+### Environment variables
+
+
+| Variable             | Default                 | Description           |
+| -------------------- | ----------------------- | --------------------- |
+| `OPENROUTER_API_KEY` | —                       | Required              |
+| `CUSTOMER_API_URL`   | `http://localhost:5001` | Customer API base URL |
+
+
+### `config.py` variables
+
+
+| Variable                     | Default                 | Description                                    |
+| ---------------------------- | ----------------------- | ---------------------------------------------- |
+| `OPENROUTER_BASE_URL`        | `https://openrouter.ai/api/v1` | OpenRouter API base URL                   |
+| `MODEL`                      | `openai/gpt-oss-120b:exacto`   | LLM model ID                              |
+| `FETCH_TIMEOUT_SECONDS`      | `30`                    | HTTP timeout for fetch                         |
+| `LLM_TIMEOUT_SECONDS`        | `60`                    | OpenRouter request timeout                     |
+| `LLM_MAX_RETRIES`            | `3`                     | OpenRouter retry count                         |
+| `NODE_MAX_RETRIES`           | `3`                     | LangGraph per-node retry attempts (I/O nodes)  |
+| `FETCH_NODE_TIMEOUT_SECONDS` | `45`                    | LangGraph wall-clock cap on `fetch` attempts   |
+| `LLM_NODE_TIMEOUT_SECONDS`   | `90`                    | LangGraph wall-clock cap on LLM node attempts  |
+| `PARSE_MAX_CHARS`            | `4000`                  | Characters per parse window                    |
+| `PARSE_CHUNK_OVERLAP`        | `500`                   | Overlap between windows                        |
+| `PARSE_MAX_WINDOWS`          | `20`                    | Max LLM parse calls per order record           |
+| `PARSE_MAX_WORKERS`          | `5`                     | Max concurrent `Send(parse_record)` tasks      |
+| `MAX_PLAN_ATTEMPTS`          | `3`                     | Review loop retry cap (enforced on graph edge) |
+| `USER_QUERY_MAX_CHARS`       | `2000`                  | Max natural-language query length              |
+| `PLAN_MAX_TOOL_TURNS`        | `8`                     | Max tool-calling rounds in `plan`              |
+| `PLAN_FEEDBACK_MAX_CHARS`    | `500`                   | Max review feedback injected into re-plan      |
+| `REVIEW_PLAN_MAX_JSON_CHARS` | `8000`                  | Max serialized filter tree in review prompt    |
+
 ## Project layout
 
 ```
@@ -223,7 +251,7 @@ agent/
   tools/
     fetch_orders.py
     create_filter.py    # Filter tool schemas + execution helpers
-config.py               # Settings — env-backed defaults, editable directly
+config.py               # Settings — env for key/API URL; edit variables for tuning
 main.py
 web_app.py              # Flask UI with SSE node progress
 static/                 # Frontend assets (index.html, app.js, style.css)
@@ -237,4 +265,3 @@ static/                 # Frontend assets (index.html, app.js, style.css)
 - **Richer query options** — nested conditions, sorting, aggregates, order comparison
 - **Semantic field/item search** — RAG tool so queries like "lighting" match orders with "lamp"
 - **Eval harness** — golden prompt sets per node so model/workflow changes do not regress behavior
-
