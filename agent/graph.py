@@ -201,6 +201,10 @@ PIPELINE_NODES: tuple[str, ...] = (
     "respond",
 )
 
+PIPELINE_STEP_NUMBERS: dict[str, int] = {
+    node: index + 1 for index, node in enumerate(PIPELINE_NODES)
+}
+
 
 def _empty_result(user_query: str, error: str) -> dict[str, Any]:
     return {
@@ -239,8 +243,22 @@ def _patch_list_len(value: Any) -> int | None:
     return None
 
 
+def _node_start_event(node: str, visit: int) -> dict[str, Any]:
+    event: dict[str, Any] = {
+        "event": "node_start",
+        "node": node,
+        "visit": visit,
+        "label": TRACE_NODE_LABELS.get(node, node.replace("_", " ")),
+    }
+    if step := PIPELINE_STEP_NUMBERS.get(node):
+        event["step"] = step
+    return event
+
+
 def _node_event(node: str, patch: dict[str, Any]) -> dict[str, Any]:
     event: dict[str, Any] = {"event": "node", "node": node}
+    if step := PIPELINE_STEP_NUMBERS.get(node):
+        event["step"] = step
     if patch.get("status") == "error":
         event["status"] = "error"
     if patch.get("error"):
@@ -272,24 +290,35 @@ async def stream_run(user_query: str):
         return
 
     final: dict[str, Any] | None = None
-    step = 0
     visit_counts: dict[str, int] = {}
     async for mode, chunk in _graph.astream(
         {"user_query": safe_query},
-        stream_mode=["updates", "values"],
+        stream_mode=["tasks", "updates", "values"],
         config={"max_concurrency": PARSE_MAX_WORKERS},
     ):
-        if mode == "updates":
+        if mode == "tasks":
+            if "result" in chunk:
+                continue
+            trace_node = chunk.get("name")
+            if not trace_node or trace_node in _SKIP_TRACE_NODES:
+                continue
+            if trace_node == "parse_record":
+                visit = 1
+            else:
+                visit_counts[trace_node] = visit_counts.get(trace_node, 0) + 1
+                visit = visit_counts[trace_node]
+            yield _node_start_event(trace_node, visit)
+        elif mode == "updates":
             for node, patch in chunk.items():
                 patch = patch if isinstance(patch, dict) else {}
                 trace_node = _resolve_trace_node(node, patch)
                 if trace_node is None:
                     continue
-                step += 1
-                visit_counts[trace_node] = visit_counts.get(trace_node, 0) + 1
                 event = _node_event(trace_node, patch)
-                event["step"] = step
-                event["visit"] = visit_counts[trace_node]
+                if trace_node == "parse_record":
+                    event["visit"] = 1
+                else:
+                    event["visit"] = visit_counts.get(trace_node, 1)
                 event["label"] = TRACE_NODE_LABELS.get(
                     trace_node, trace_node.replace("_", " ")
                 )

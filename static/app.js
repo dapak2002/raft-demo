@@ -23,8 +23,8 @@ const NODE_LABELS = {
 let lastNode = null;
 let parseGroupEl = null;
 let parseGroupCount = 0;
-let parseGroupFirstStep = null;
-let parseGroupLastStep = null;
+let parseGroupCompleted = 0;
+let parseGroupStep = null;
 
 function setBadge(status) {
   statusBadge.className = `badge badge-${status}`;
@@ -35,8 +35,8 @@ function resetUi() {
   lastNode = null;
   parseGroupEl = null;
   parseGroupCount = 0;
-  parseGroupFirstStep = null;
-  parseGroupLastStep = null;
+  parseGroupCompleted = 0;
+  parseGroupStep = null;
   traceEl.innerHTML = "";
   traceStatusEl.textContent = "Running…";
   errorPanel.classList.add("hidden");
@@ -63,10 +63,8 @@ function formatNodeLabel(node, visit, patch = {}) {
   return base;
 }
 
-function formatStepRange(first, last) {
-  if (first == null) return "?";
-  if (last == null || first === last) return String(first);
-  return `${first}–${last}`;
+function formatStepIndex(step) {
+  return step == null ? "…" : String(step);
 }
 
 function buildStepDetails(patch) {
@@ -137,85 +135,180 @@ function createTraceStepElement(patch = {}) {
   return li;
 }
 
-function renderParseGroup(patch) {
+function findStep(node, visit) {
+  return traceEl.querySelector(
+    `.trace-step[data-node="${node}"][data-visit="${visit || 1}"]`,
+  );
+}
+
+function setStepMeta(li, patch) {
+  li.dataset.node = patch.node;
+  li.dataset.visit = String(patch.visit || 1);
+}
+
+function renderParseGroup({ running = false } = {}) {
   if (!parseGroupEl) return;
 
   const label = `Parse records ×${parseGroupCount}`;
   const recordLabel = parseGroupCount === 1 ? "record" : "records";
 
-  parseGroupEl.querySelector(".trace-index").textContent = formatStepRange(
-    parseGroupFirstStep,
-    parseGroupLastStep,
+  parseGroupEl.querySelector(".trace-index").textContent = formatStepIndex(
+    parseGroupStep,
   );
   parseGroupEl.querySelector(".trace-node").textContent = label;
-  parseGroupEl.querySelector(".trace-detail").textContent =
-    `${parseGroupCount} ${recordLabel} parsed in parallel`;
+
+  let detailText;
+  if (running && parseGroupCompleted < parseGroupCount) {
+    detailText = `${parseGroupCompleted}/${parseGroupCount} ${recordLabel} parsed`;
+  } else {
+    detailText = `${parseGroupCount} ${recordLabel} parsed in parallel`;
+  }
+
+  const detailEl = parseGroupEl.querySelector(".trace-detail");
+  if (detailEl) {
+    detailEl.textContent = detailText;
+  }
+
+  parseGroupEl.scrollIntoView({ block: "nearest", behavior: "smooth" });
+  traceStatusEl.textContent = running
+    ? `Running: ${label}`
+    : `Last completed: ${label}`;
+  lastNode = "parse_record";
+}
+
+function beginParseRecord(patch) {
+  if (!parseGroupEl) {
+    finalizeCurrentSteps();
+    parseGroupEl = createTraceStepElement(patch);
+    parseGroupEl.classList.add("trace-group");
+    setStepMeta(parseGroupEl, { node: "parse_record", visit: 1 });
+    parseGroupStep = patch.step ?? 2;
+    parseGroupCount = 0;
+    parseGroupCompleted = 0;
+    traceEl.appendChild(parseGroupEl);
+  }
+
+  parseGroupCount += 1;
+  renderParseGroup({ running: true });
+}
+
+function completeParseRecord(patch) {
+  if (!parseGroupEl) {
+    beginParseRecord(patch);
+  }
+
+  parseGroupCompleted += 1;
 
   if (patch.error) {
     parseGroupEl.classList.add("trace-error");
   }
 
-  parseGroupEl.scrollIntoView({ block: "nearest", behavior: "smooth" });
-  traceStatusEl.textContent = `Last completed: ${label}`;
-  lastNode = "parse_record";
-}
-
-function appendParseRecord(patch) {
-  if (!parseGroupEl) {
-    finalizeCurrentSteps();
-    parseGroupEl = createTraceStepElement(patch);
-    parseGroupEl.classList.add("trace-group");
-    parseGroupFirstStep = patch.step ?? null;
+  if (parseGroupCompleted >= parseGroupCount) {
+    parseGroupEl.classList.remove("current");
+    parseGroupEl.classList.add("done");
+    renderParseGroup({ running: false });
+    parseGroupEl = null;
     parseGroupCount = 0;
-    traceEl.appendChild(parseGroupEl);
+    parseGroupCompleted = 0;
+    parseGroupStep = null;
+    return;
   }
 
-  parseGroupCount += 1;
-  parseGroupLastStep = patch.step ?? parseGroupLastStep;
-  renderParseGroup(patch);
+  renderParseGroup({ running: true });
 }
 
-function appendStep(patch) {
+function beginStep(patch) {
   if (patch.node === "parse_record") {
-    appendParseRecord(patch);
+    beginParseRecord(patch);
     return;
   }
 
   parseGroupEl = null;
   parseGroupCount = 0;
-  parseGroupFirstStep = null;
-  parseGroupLastStep = null;
+  parseGroupCompleted = 0;
+  parseGroupStep = null;
 
   finalizeCurrentSteps();
 
   const node = patch.node;
   const visit = patch.visit || 1;
   const isRevisit = visit > 1;
-  const isErrorStep = patch.status === "error" || Boolean(patch.error);
 
   const li = createTraceStepElement(patch);
+  setStepMeta(li, patch);
   const label = formatNodeLabel(node, visit, patch);
-  const detailText = buildStepDetails(patch);
   const tags = isRevisit ? ['<span class="trace-tag">revisit</span>'] : [];
-  if (isErrorStep) {
-    tags.push('<span class="trace-tag trace-tag-error">stopped</span>');
-  }
 
-  li.querySelector(".trace-index").textContent = String(patch.step ?? "?");
+  li.querySelector(".trace-index").textContent = formatStepIndex(patch.step);
   li.querySelector(".trace-node").textContent = label;
   li.querySelector(".trace-title-row").insertAdjacentHTML(
     "beforeend",
     tags.join(""),
   );
+  li.querySelector(".trace-detail").textContent = "Running…";
+
+  traceEl.appendChild(li);
+  li.scrollIntoView({ block: "nearest", behavior: "smooth" });
+
+  lastNode = node;
+  traceStatusEl.textContent = `Running: ${label}`;
+}
+
+function completeStep(patch) {
+  if (patch.node === "parse_record") {
+    completeParseRecord(patch);
+    return;
+  }
+
+  parseGroupEl = null;
+  parseGroupCount = 0;
+  parseGroupCompleted = 0;
+  parseGroupStep = null;
+
+  const node = patch.node;
+  const visit = patch.visit || 1;
+  const isRevisit = visit > 1;
+  const isErrorStep = patch.status === "error" || Boolean(patch.error);
+  const label = formatNodeLabel(node, visit, patch);
+  const detailText = buildStepDetails(patch);
+
+  let li = findStep(node, visit);
+  if (!li) {
+    beginStep(patch);
+    li = findStep(node, visit);
+  }
+
+  li.classList.remove("current");
+  li.classList.add("done");
+  if (isErrorStep) {
+    li.classList.add("trace-error");
+  }
+
+  li.querySelector(".trace-index").textContent = formatStepIndex(patch.step);
+  li.querySelector(".trace-node").textContent = label;
+
+  const titleRow = li.querySelector(".trace-title-row");
+  titleRow.querySelectorAll(".trace-tag").forEach((tag) => tag.remove());
+  const tags = isRevisit ? ['<span class="trace-tag">revisit</span>'] : [];
+  if (isErrorStep) {
+    tags.push('<span class="trace-tag trace-tag-error">stopped</span>');
+  }
+  titleRow.insertAdjacentHTML("beforeend", tags.join(""));
 
   const detailEl = li.querySelector(".trace-detail");
   if (detailText) {
-    detailEl.textContent = detailText;
-  } else {
+    if (detailEl) {
+      detailEl.textContent = detailText;
+    } else {
+      li.querySelector(".trace-body").insertAdjacentHTML(
+        "beforeend",
+        `<div class="trace-detail">${escapeHtml(detailText)}</div>`,
+      );
+    }
+  } else if (detailEl) {
     detailEl.remove();
   }
 
-  traceEl.appendChild(li);
   li.scrollIntoView({ block: "nearest", behavior: "smooth" });
 
   lastNode = node;
@@ -322,8 +415,10 @@ async function runQuery() {
         if (!line) continue;
         const payload = JSON.parse(line.slice(6));
 
-        if (payload.event === "node") {
-          appendStep(payload);
+        if (payload.event === "node_start") {
+          beginStep(payload);
+        } else if (payload.event === "node") {
+          completeStep(payload);
         } else if (payload.event === "error") {
           showError(payload.message || "Stream error");
         } else if (payload.event === "done") {
